@@ -4,8 +4,6 @@ __pycache__/
 *.pyc
 build/
 dist/
-
-# JetBrains IDE project state
 .idea/
 
 # Node (panel source folders)
