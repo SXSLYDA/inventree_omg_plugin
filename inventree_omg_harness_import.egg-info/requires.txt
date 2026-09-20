@@ -1,0 +1,3 @@
+requests
+openpyxl
+mouser-lookup @ git+https://github.com/<your-username>/<your-repo>.git#subdirectory=mouser_shared

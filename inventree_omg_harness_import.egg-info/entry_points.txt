@@ -1,0 +1,2 @@
+[inventree_plugins]
+OmgHarnessImportPlugin = omg_import_plugin.core:OmgHarnessImportPlugin

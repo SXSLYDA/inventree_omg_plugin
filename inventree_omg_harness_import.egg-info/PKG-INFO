@@ -1,0 +1,11 @@
+Metadata-Version: 2.4
+Name: inventree-omg-harness-import
+Version: 0.1.0
+Summary: InvenTree plugin: reconciles OMG Harness component lists against InvenTree parts, imports/updates harness BOMs, syncs harness parts with OMG on demand, exports a Sales Order's parts list to XLSX, and integrates Mouser into InvenTree's native Import Part wizard.
+Author: Tyler / OMG Harness
+Requires-Dist: requests
+Requires-Dist: openpyxl
+Requires-Dist: mouser-lookup @ git+https://github.com/<your-username>/<your-repo>.git#subdirectory=mouser_shared
+Dynamic: author
+Dynamic: requires-dist
+Dynamic: summary
