@@ -69,35 +69,35 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         # --- OMG credentials — set these up here, from InvenTree's side ---
         "OMG_HARNESS_API_URL": {
             "name": "OMG Harness API URL",
-            "description": "Base URL of your OMG Harness instance, e.g. https://omg.example.com",
+            "description": "The web address of your OMG Harness account, e.g. https://omg.example.com",
             "default": "",
         },
         "OMG_HARNESS_API_TOKEN": {
             "name": "OMG Harness API Token",
-            "description": "API token for a service user in OMG Harness. Determines which harnesses "
-                            "are visible to this plugin (same company-scoping OMG applies to any user). "
-                            "Used for reading FROM OMG (harness search, BOM export) — see "
-                            "OMG_INBOUND_WEBHOOK_TOKEN below for the separate credential OMG checks "
-                            "when this plugin pushes reconciliation data back the other way.",
+            "description": "Lets this plugin search and pull harness designs from your OMG Harness "
+                            "account. Generate this on OMG's own InvenTree Settings page and paste it "
+                            "here. This is a different credential from the Inbound Webhook Token below "
+                            "— they're not interchangeable, so don't paste one where the other goes.",
             "default": "",
             "protected": True,
         },
         "OMG_INBOUND_WEBHOOK_TOKEN": {
             "name": "OMG Inbound Webhook Token",
-            "description": "Separate from the API Token above — this is what OMG checks when this "
-                            "plugin pushes reconciliation results back to it (resolved parts, matches, "
-                            "flags). Copy the exact value from OMG's own InvenTree Setup page (its "
-                            "'Inbound Webhook Token' field, generated there, not typed in) — do not "
-                            "reuse the API Token value here, they authenticate two different directions "
-                            "and OMG will reject this one if it doesn't match exactly.",
+            "description": "Lets OMG know it's really this plugin reporting back after an import — "
+                            "which parts matched, and which need a person to look at them. Copy this "
+                            "exact value from OMG's own InvenTree Settings page (it's generated "
+                            "automatically there, not something you make up yourself). Different "
+                            "credential from the API Token above — copying the wrong one here will "
+                            "make imports work fine but reports back to OMG silently fail.",
             "default": "",
             "protected": True,
         },
         # --- Mouser ---
         "OMG_MOUSER_API_KEY": {
             "name": "Mouser API Key",
-            "description": "Used by the Import Part wizard's Mouser search, and by harness imports "
-                            "that resolve pending (not-yet-in-InvenTree) OMG components.",
+            "description": "Your Mouser Electronics API key. Used when searching Mouser from the "
+                            "Import Part wizard, and when a harness import needs to look up a part "
+                            "that OMG has but InvenTree doesn't have yet.",
             "default": "",
             "protected": True,
         },
@@ -139,10 +139,13 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         },
         "OMG_PRIMARY_COLOR_PARAM_NAME": {
             "name": "Primary Color Parameter Name",
+            "description": "InvenTree part parameter name holding a conductor's primary wire color.",
             "default": "Primary Color",
         },
         "OMG_SECONDARY_COLOR_PARAM_NAME": {
             "name": "Secondary Color Parameter Name",
+            "description": "InvenTree part parameter name holding a conductor's secondary (stripe) "
+                            "wire color, for two-color wires. Leave the default if you don't use these.",
             "default": "Secondary Color",
         },
         "OMG_CONTACT_COUNT_PARAM_NAME": {
@@ -165,17 +168,21 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         },
         "OMG_CONTACT_MAX_GAUGE_PARAM_NAME": {
             "name": "Contact Max Gauge Parameter Name",
+            "description": "InvenTree part parameter name (on a CONTACT part, not the connector) "
+                            "holding the maximum wire gauge that contact accepts. Same conditions as "
+                            "Contact Min Gauge above — only relevant when a connector has more than "
+                            "one Contact-tagged Related Part.",
             "default": "Max Gauge",
         },
         "OMG_HARNESS_MARKER_PARAM_NAME": {
             "name": "OMG Harness Marker Parameter Name",
             "description": "InvenTree part parameter name used to mark a part as an OMG-managed "
-                            "harness — set to 'true' automatically on every part this plugin creates "
-                            "or successfully imports/syncs. This is what the 'Sync with OMG' panel "
-                            "actually checks for (not just whether a part is an assembly), so it "
-                            "doesn't show up on unrelated assemblies that have nothing to do with OMG. "
-                            "You can also set this manually on a part you created yourself in InvenTree "
-                            "but want to link to OMG before its first sync.",
+                            "harness — set to 'true' automatically the first time this part is linked "
+                            "or synced with OMG. The 'OMG Harness' panel shows on every assembly part "
+                            "either way, but this marker decides whether that panel shows a link-to-OMG "
+                            "search or the sync/re-import view for an already-linked harness. You can "
+                            "also set this manually on a part you created yourself in InvenTree, before "
+                            "its first sync, if you want it treated as already linked.",
             "default": "OMG Harness",
         },
         "AMBIGUOUS_SEARCH_LIMIT": {
