@@ -316,7 +316,17 @@ class HarnessSearchProxyView(APIView):
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness-search/",
                 params={"q": query, "limit": 15},
-                headers={"Authorization": f"Token {omg_token}"},
+                # Bearer, not Token - OMG's own auth middleware
+                # (backend.authentication.tokens.TokenAuthenticationMiddleware)
+                # only recognizes "Bearer <jwt>", checked directly against
+                # its source: it never looks at a header starting with
+                # anything else, regardless of whether the token itself
+                # is valid. This is a custom JWT scheme, not DRF's
+                # standard TokenAuthentication (rest_framework.authtoken
+                # isn't even installed in this project) - don't assume
+                # "Token" here just because that's the more common DRF
+                # convention elsewhere.
+                headers={"Authorization": f"Bearer {omg_token}"},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -370,7 +380,9 @@ class HarnessImportView(APIView):
         try:
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness/{harness_part_number}/inventree-bom/",
-                headers={"Authorization": f"Token {omg_token}"},
+                # Bearer, not Token - see the identical note on the
+                # harness-search call above; same middleware, same fix.
+                headers={"Authorization": f"Bearer {omg_token}"},
                 timeout=15,
             )
             resp.raise_for_status()
