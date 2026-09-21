@@ -54,14 +54,14 @@ export default defineConfig({
         // Generate two sets of output files:
         // One without hashes - for backwards compatibility
         {
-          dir: '../static_output',
+          dir: '../static',
           entryFileNames: '[name].js',
           assetFileNames: 'assets/[name].[ext]',
           globals: externalLibs,
         },
         // And one with hashes for cache busting
         {
-          dir: '../static_output',
+          dir: '../static',
           entryFileNames: '[name]-[hash].js',
           assetFileNames: 'assets/[name].[ext]',
           globals: externalLibs,

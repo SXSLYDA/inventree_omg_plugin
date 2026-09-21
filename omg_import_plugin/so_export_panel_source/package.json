@@ -7,7 +7,7 @@
     
     "lint": "npx @biomejs/biome check ./src",
     "lint:fix": "npx @biomejs/biome check ./src --fix",
-    "build": "tsc -b && vite build --emptyOutDir",
+    "build": "tsc -b && vite build",
     "dev": "vite --config vite.dev.config.ts --host"
   },
   "dependencies": {

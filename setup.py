@@ -28,22 +28,11 @@ setuptools.setup(
         "openpyxl",  # sales_order_export.py's XLSX generation
         # mouser_supplier.py and resolve_pending.py both import this
         # directly — it's a real dependency, not optional. This is our
-        # own package too (see ../mouser_shared/), never published to
-        # PyPI, so it needs a direct URL reference (PEP 508) rather than
-        # a plain name — pip resolves this from git during install, no
-        # separate manual step needed.
-        #
-        # This assumes you push the WHOLE project (omg/, mouser_shared/,
-        # inventree/ together) as one repo, and installs mouser_shared/
-        # from its subdirectory via pip's #subdirectory= syntax — no
-        # need for two separate repos. If you'd rather keep mouser_shared
-        # in its own repo instead, drop the #subdirectory= part and point
-        # this at that repo's URL directly.
-        #
-        # ADJUST: replace <your-username>/<your-repo> once this is
-        # actually pushed somewhere — pip can't install a URL that
-        # doesn't exist yet.
-        "mouser-lookup @ git+https://github.com/<your-username>/<your-repo>.git#subdirectory=mouser_shared",
+        # own package too (see mouser_shared, its own separate repo),
+        # never published to PyPI, so it needs a direct URL reference
+        # (PEP 508) rather than a plain name — pip resolves this from
+        # git during install, no separate manual step needed.
+        "mouser-lookup @ git+https://github.com/SXSLYDA/mouser_shared.git",
     ],
     entry_points={
         # This is the entry point group InvenTree scans for installed plugins.
