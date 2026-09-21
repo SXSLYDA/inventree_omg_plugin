@@ -63,7 +63,12 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [resolvingId, setResolvingId] = useState<number | null>(null);
 
     // Link flow (only used while !isLinked)
-    const [query, setQuery] = useState('');
+    // Pre-filled with the part's own name — that's the overwhelmingly
+    // likely search term (OMG matches harnesses by name, same as
+    // runSync below), so someone linking this part shouldn't have to
+    // retype what's already right there on the page. Still fully
+    // editable if the actual OMG harness is named differently.
+    const [query, setQuery] = useState(() => context?.instance?.name || '');
     const [searching, setSearching] = useState(false);
     const [searchError, setSearchError] = useState<string | null>(null);
     const [results, setResults] = useState<HarnessSearchResult[]>([]);
