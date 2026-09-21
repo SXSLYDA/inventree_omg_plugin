@@ -30,6 +30,16 @@ class ImportBatch(models.Model):
     def __str__(self):
         return f"Import batch for {self.root_part_number} ({self.created_at:%Y-%m-%d %H:%M})"
 
+    class Meta:
+        # Required even under AppMixin — InvenTree confirmed this as
+        # expected behavior (not a bug to be fixed), see
+        # github.com/inventree/InvenTree/issues/3588. Without this,
+        # Django can't resolve which app this model belongs to, since
+        # AppMixin registers the plugin's own directory name
+        # ("omg_import_plugin") as the INSTALLED_APPS entry, not
+        # something Django can infer on its own from the model alone.
+        app_label = "omg_import_plugin"
+
 
 class UnresolvedImportItem(models.Model):
     """
@@ -83,6 +93,7 @@ class UnresolvedImportItem(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
+        app_label = "omg_import_plugin"
         indexes = [models.Index(fields=["resolution"])]
 
     def __str__(self):
@@ -131,3 +142,6 @@ class OmgUserCredential(models.Model):
 
     def __str__(self):
         return f"OMG credential for {self.user}"
+
+    class Meta:
+        app_label = "omg_import_plugin"
