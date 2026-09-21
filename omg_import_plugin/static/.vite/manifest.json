@@ -1,8 +1,8 @@
 {
-  "src/Panel.tsx": {
-    "file": "Panel-bhuM5Ta4.js",
-    "name": "Panel",
-    "src": "src/Panel.tsx",
+  "src/ImportHarnessPanel.tsx": {
+    "file": "ImportHarnessPanel-Zzz0Ghp4.js",
+    "name": "ImportHarnessPanel",
+    "src": "src/ImportHarnessPanel.tsx",
     "isEntry": true
   }
 }

@@ -65,6 +65,13 @@ class ImportBatchSerializer(serializers.ModelSerializer):
 class HarnessImportRequestSerializer(serializers.Serializer):
     harness_part_number = serializers.CharField(max_length=120)
     category_pk = serializers.IntegerField(required=False, allow_null=True)
+    # Set when this import was triggered from an EXISTING part's own
+    # detail page (the "link this part to OMG" flow) rather than the
+    # dashboard's search-and-import — pins the harness to this exact
+    # part regardless of whether its name matches harness_part_number,
+    # so linking a part the user is already looking at can never
+    # accidentally create or match a different part instead.
+    target_part_pk = serializers.IntegerField(required=False, allow_null=True)
 
 
 # ---------------------------------------------------------------------
@@ -157,12 +164,17 @@ class LatestBatchForPartView(APIView):
     """
     GET /plugin/omg-harness-import/batches/latest/?part_pk=123
 
-    Backs the "Sync with OMG" panel — shows the last sync's outcome
-    (when, matched/flagged counts) for a specific harness part, so the
-    panel has something to display before anyone clicks the button.
-    Returns null (200, no error) if this part has never been imported,
-    rather than a 404 — "never synced yet" is a normal state, not a
-    failure, for a part that might have just been created manually.
+    Backs the "OMG Harness" panel — reports both whether this part is
+    linked to OMG at all (the same OMG_HARNESS_MARKER_PARAM_NAME check
+    core.py's get_ui_panels uses to decide whether to show this panel
+    in the first place — checked again here, server-side, rather than
+    trusting the frontend to re-derive it, since the frontend has no
+    reliable way to read a plugin setting or a part parameter on its
+    own) and the last sync's outcome (when, matched/flagged counts), so
+    the panel can render its "link" or "sync" state correctly and show
+    something before anyone clicks a button. batch is null if this part
+    has never been imported — a normal state, not a failure, for a
+    part that might just have been marked manually and not synced yet.
     """
     permission_classes = [IsAuthenticated]
 
@@ -171,10 +183,24 @@ class LatestBatchForPartView(APIView):
         if not part_pk:
             return Response({"detail": "part_pk is required."}, status=status.HTTP_400_BAD_REQUEST)
 
+        from part.models import Part
+        from .inventree_native_lookup import get_part_parameter_str
+
+        part = Part.objects.filter(pk=part_pk).first()
+        if not part:
+            return Response({"detail": f"No part found with pk {part_pk}."}, status=status.HTTP_404_NOT_FOUND)
+
+        from plugin.registry import registry
+        plugin = registry.get_plugin("omg-harness-import")
+        marker_param = plugin.get_setting("OMG_HARNESS_MARKER_PARAM_NAME") if plugin else None
+        marker_param = marker_param or "OMG Harness"
+        is_linked = (get_part_parameter_str(part, marker_param) or "").strip().lower() == "true"
+
         batch = ImportBatch.objects.filter(root_part_id=part_pk).order_by("-created_at").first()
-        if not batch:
-            return Response(None)
-        return Response(ImportBatchSerializer(batch).data)
+        return Response({
+            "is_linked": is_linked,
+            "batch": ImportBatchSerializer(batch).data if batch else None,
+        })
 
 
 class WorkOnInOmgUrlView(APIView):
@@ -329,6 +355,7 @@ class HarnessImportView(APIView):
         serializer.is_valid(raise_exception=True)
         harness_part_number = serializer.validated_data["harness_part_number"]
         category_pk = serializer.validated_data.get("category_pk")
+        target_part_pk = serializer.validated_data.get("target_part_pk")
 
         from plugin.registry import registry
         plugin = registry.get_plugin("omg-harness-import")
@@ -365,6 +392,7 @@ class HarnessImportView(APIView):
             batch, resolved_matches = import_or_update_harness_bom(
                 harness_part_number, omg_bom_data, contact_count_param=contact_count_param,
                 category_pk=category_pk, harness_marker_param=harness_marker_param,
+                target_part_pk=target_part_pk,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

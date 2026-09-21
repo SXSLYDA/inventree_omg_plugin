@@ -305,7 +305,7 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
     return additions
 
 
-def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_count_param=None, category_pk=None, harness_marker_param=None):
+def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_count_param=None, category_pk=None, harness_marker_param=None, target_part_pk=None):
     """
     harness_part_number: the harness's IPN in InvenTree.
     omg_bom_data: the payload from OMG's HarnessBomExportView — includes
@@ -319,6 +319,14 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
                           is set. Defaults to OMG_CONTACT_COUNT_PARAM_NAME.
     category_pk: optional InvenTree category to create the harness part
                  in, if it doesn't exist yet. Left uncategorized if omitted.
+    target_part_pk: optional — when given, use THIS EXACT existing part
+                 rather than finding/creating one by name match. This is
+                 the "link this part I'm already looking at" flow (see
+                 core.py's get_ui_panels, the unlinked-assembly panel),
+                 as opposed to the dashboard's "search OMG, import"
+                 flow, where no specific InvenTree part is already in
+                 view and name-based find-or-create is the right
+                 behavior. Raises ValueError if the pk doesn't exist.
 
     The harness's OWN part gets auto-created here if it doesn't exist
     yet — this is the one root-level exception to "never auto-create,"
@@ -342,24 +350,29 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
     """
     contact_count_param = contact_count_param or DEFAULT_CONTACT_COUNT_PARAM
 
-    # REFACTORED: was IPN-only (Part.objects.filter(IPN__iexact=...)) — a
-    # real screenshot of this project's actual InvenTree "Edit Part" form
-    # confirmed IPN is genuinely never used (empty, not required) while
-    # the real part number goes into `name` (the actually-required
-    # field). Checks both now — name is what's actually populated in
-    # practice; IPN stays checked too since it's harmless and forward-
-    # compatible if it's ever used.
-    harness_part = Part.objects.filter(
-        Q(name__iexact=harness_part_number) | Q(IPN__iexact=harness_part_number)
-    ).first()
-    if not harness_part:
-        harness_part = Part.objects.create(
-            name=harness_part_number,
-            IPN=harness_part_number,
-            description=omg_bom_data.get("harness_description") or "",
-            category_id=category_pk,
-            active=True, virtual=False, assembly=True,
-        )
+    if target_part_pk:
+        try:
+            harness_part = Part.objects.get(pk=target_part_pk)
+        except Part.DoesNotExist:
+            raise ValueError(f"No InvenTree part found with pk {target_part_pk}.")
+    else:
+        # name is checked first — a real screenshot of this project's
+        # actual InvenTree "Edit Part" form confirmed IPN is genuinely
+        # never used (empty, not required) while the real part number
+        # goes into name (the actually-required field). IPN stays
+        # checked too since it's harmless and forward-compatible if
+        # it's ever used.
+        harness_part = Part.objects.filter(
+            Q(name__iexact=harness_part_number) | Q(IPN__iexact=harness_part_number)
+        ).first()
+        if not harness_part:
+            harness_part = Part.objects.create(
+                name=harness_part_number,
+                IPN=harness_part_number,
+                description=omg_bom_data.get("harness_description") or "",
+                category_id=category_pk,
+                active=True, virtual=False, assembly=True,
+            )
 
     _mark_as_omg_harness(harness_part, marker_param=harness_marker_param)
 

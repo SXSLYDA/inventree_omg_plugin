@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Group, Stack, Table, Text, Title } from '@mantine/core';
+import { Alert, Badge, Button, Group, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
@@ -27,33 +27,49 @@ interface UnresolvedItem {
     candidates: Candidate[];
 }
 
+interface HarnessSearchResult {
+    id: number;
+    part_number: string;
+    description: string;
+}
+
 /**
- * "Sync with OMG" — shown on a harness's own Part detail page (parts
- * explicitly marked as OMG-managed — see core.py's get_ui_panels). Same
- * sync action whether it's the first import or a re-sync after changes
- * in OMG's design tool — both just call import-harness/ again.
- *
- * Includes an inline review queue for this harness's flagged items —
- * resolving them (linking a candidate, or dismissing) doesn't require
- * leaving InvenTree's own UI for Django admin.
+ * "OMG Harness" — shown on every assembly part's own detail page (see
+ * core.py's get_ui_panels). Two states, one panel:
+ *   - not yet linked to OMG: search OMG's harness part numbers and
+ *     link this exact part to one (target_part_pk pins it, regardless
+ *     of whether this part's own name happens to match).
+ *   - already linked: the original sync/re-import flow, plus the
+ *     inline review queue for flagged items.
+ * is_linked itself is checked server-side (LatestBatchForPartView),
+ * not inferred from batch history alone — a part can be marked linked
+ * manually before ever running a first sync.
  *
  * Backed by:
- *   GET  /plugin/omg-harness-import/batches/latest/?part_pk=...     (status on load)
- *   POST /plugin/omg-harness-import/import-harness/                 (the sync button)
+ *   GET  /plugin/omg-harness-import/batches/latest/?part_pk=...     (is_linked + status, on load)
+ *   GET  /plugin/omg-harness-import/harness-search/                 (search, when not yet linked)
+ *   POST /plugin/omg-harness-import/import-harness/                 (link-and-import, or re-sync)
  *   GET  /plugin/omg-harness-import/unresolved/?part_pk=...          (review queue)
  *   POST /plugin/omg-harness-import/unresolved/<id>/resolve/         (link/dismiss)
  *   GET  /plugin/omg-harness-import/work-on-url/?part_pk=...         (deep link to OMG)
  */
 function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [lastBatch, setLastBatch] = useState<BatchSummary | null>(null);
+    const [isLinked, setIsLinked] = useState(false);
     const [loadingStatus, setLoadingStatus] = useState(true);
     const [syncing, setSyncing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [queue, setQueue] = useState<UnresolvedItem[]>([]);
     const [resolvingId, setResolvingId] = useState<number | null>(null);
 
+    // Link flow (only used while !isLinked)
+    const [query, setQuery] = useState('');
+    const [searching, setSearching] = useState(false);
+    const [searchError, setSearchError] = useState<string | null>(null);
+    const [results, setResults] = useState<HarnessSearchResult[]>([]);
+    const [linkingPartNumber, setLinkingPartNumber] = useState<string | null>(null);
+
     const partId = context.id;
-    const partIpn = context?.instance?.IPN;
 
     const loadStatus = useCallback(async () => {
         if (!partId) return;
@@ -62,15 +78,18 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.get('/plugin/omg-harness-import/batches/latest/', {
                 params: { part_pk: partId },
             });
-            setLastBatch(response.data);
+            setIsLinked(!!response.data?.is_linked);
+            setLastBatch(response.data?.batch ?? null);
         } catch (err: any) {
-            // A failed status check shouldn't block the sync button from
-            // being usable — just show no prior status.
+            // A failed status check shouldn't block the rest of the panel
+            // from being usable — just show the "not linked" state.
+            setIsLinked(false);
             setLastBatch(null);
         } finally {
             setLoadingStatus(false);
         }
     }, [partId, context.api]);
+
 
     const loadQueue = useCallback(async () => {
         if (!partId) return;
@@ -92,8 +111,9 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     }, [loadStatus, loadQueue]);
 
     const runSync = useCallback(async () => {
-        if (!partIpn) {
-            setError('This part has no IPN set — OMG matches harnesses by IPN, so one is needed before syncing.');
+        const partName = context?.instance?.name;
+        if (!partName) {
+            setError('This part has no name set — OMG matches harnesses by name, so one is needed before syncing.');
             return;
         }
         setSyncing(true);
@@ -101,7 +121,8 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
 
         try {
             const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
-                harness_part_number: partIpn,
+                harness_part_number: partName,
+                target_part_pk: partId,
             });
             setLastBatch(response.data);
             const flagged = response.data?.flagged_items || 0;
@@ -119,7 +140,63 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         } finally {
             setSyncing(false);
         }
-    }, [partIpn, context.api, loadQueue]);
+    }, [context.instance, context.api, partId, loadQueue]);
+
+    // Link flow — search OMG's harness part numbers, then link+import
+    // this exact part (target_part_pk) to whichever one is picked.
+    // Reuses the same search/import endpoints the dashboard's "Import
+    // harness from OMG" widget uses — the only difference is
+    // target_part_pk pinning the result to THIS part rather than
+    // finding/creating one by name.
+    const runSearch = useCallback(async () => {
+        if (query.trim().length < 2) {
+            setSearchError('Type at least 2 characters');
+            setResults([]);
+            return;
+        }
+        setSearching(true);
+        setSearchError(null);
+        try {
+            const response = await context.api.get('/plugin/omg-harness-import/harness-search/', {
+                params: { q: query.trim() },
+            });
+            if (response.data.error) {
+                setSearchError(response.data.error);
+                setResults([]);
+            } else {
+                setResults(response.data.results || []);
+            }
+        } catch (err: any) {
+            setSearchError(err?.response?.data?.detail || err.message);
+            setResults([]);
+        } finally {
+            setSearching(false);
+        }
+    }, [query, context.api]);
+
+    const linkHarness = useCallback(async (partNumber: string) => {
+        setLinkingPartNumber(partNumber);
+        setError(null);
+        try {
+            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
+                harness_part_number: partNumber,
+                target_part_pk: partId,
+            });
+            setLastBatch(response.data);
+            setIsLinked(true);
+            notifications.show({
+                title: 'Linked',
+                message: `Linked to ${partNumber} and imported its BOM.`,
+                color: 'green',
+            });
+            await loadQueue();
+        } catch (err: any) {
+            const detail = err?.response?.data?.detail || err.message;
+            setError(`Could not link ${partNumber}: ${detail}`);
+        } finally {
+            setLinkingPartNumber(null);
+        }
+    }, [context.api, partId, loadQueue]);
 
     const workOnInOmg = useCallback(async () => {
         if (!partId) return;
@@ -156,6 +233,61 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             setResolvingId(null);
         }
     }, [context.api, loadQueue, loadStatus]);
+
+    if (loadingStatus) {
+        return <Text size="sm" c="dimmed">Checking OMG link status…</Text>;
+    }
+
+    if (!isLinked) {
+        return (
+            <Stack gap="sm">
+                <Title order={4}>Link to OMG</Title>
+                <Text size="sm" c="dimmed">
+                    This part isn't linked to an OMG Harness design yet.
+                    Search OMG's harness part numbers below and link this
+                    exact part to one — its BOM imports immediately once
+                    linked.
+                </Text>
+
+                <Group gap="xs" align="flex-end">
+                    <TextInput
+                        label="Search OMG"
+                        placeholder="e.g. R1300G"
+                        value={query}
+                        onChange={(e) => setQuery(e.currentTarget.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+                        style={{ flex: 1 }}
+                    />
+                    <Button onClick={runSearch} loading={searching}>Search</Button>
+                </Group>
+
+                {searchError && <Alert color="orange">{searchError}</Alert>}
+                {error && <Alert color="red" title="Link issue">{error}</Alert>}
+
+                {results.length > 0 && (
+                    <Stack gap={6}>
+                        {results.map((r) => (
+                            <Group key={r.id} justify="space-between" wrap="nowrap"
+                                   style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 4, padding: '8px 12px' }}>
+                                <div>
+                                    <Text fw={500} size="sm">{r.part_number}</Text>
+                                    <Text size="xs" c="dimmed">{r.description}</Text>
+                                </div>
+                                <Button
+                                    size="xs"
+                                    variant="outline"
+                                    loading={linkingPartNumber === r.part_number}
+                                    onClick={() => linkHarness(r.part_number)}
+                                >
+                                    Link &amp; import
+                                </Button>
+                            </Group>
+                        ))}
+                    </Stack>
+                )}
+            </Stack>
+        );
+    }
 
     return (
         <Stack gap="sm">

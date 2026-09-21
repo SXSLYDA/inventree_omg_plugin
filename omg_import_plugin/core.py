@@ -216,22 +216,17 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
     def get_ui_panels(self, request, context: dict, **kwargs):
         """
         Two panels, dispatched by target_model:
-          'part'       -> "Sync with OMG" (existing, unchanged)
-          'salesorder' -> "Parts List" (new — see confidence note below)
+          'part'       -> "OMG Harness" — link or sync, depending on state
+          'salesorder' -> "Parts List" (see confidence note below)
 
-        "Sync with OMG" — shown only on parts explicitly marked as
-        OMG-managed harnesses (the OMG_HARNESS_MARKER_PARAM_NAME
-        parameter, set to "true"), NOT just any assembly part.
-
-        Checking `assembly` alone would show this on any BOM-having part
-        in InvenTree, including ones that have nothing to do with OMG —
-        a manufactured kit, some other unrelated assembly. This checks
-        for the explicit marker instead, which harness_import.py sets on
-        every part it creates or successfully syncs — so the panel only
-        ever appears where a real OMG connection actually exists. A
-        human can also set this parameter manually on a part they
-        created themselves in InvenTree, before ever running a first
-        sync, if they want to link it to OMG proactively.
+        "OMG Harness" — shown on every assembly part (not gated by the
+        marker parameter anymore). Panel.tsx checks
+        OMG_HARNESS_MARKER_PARAM_NAME itself and renders one of two
+        flows: not yet linked -> search OMG and link this exact part;
+        already linked -> sync/re-import its BOM. One panel with two
+        states, so linking and then syncing reads as one continuous
+        flow on the part's own page rather than two separate things to
+        discover (the dashboard-only import flow that predated this).
 
         "Parts List" (Sales Order) — shown for every Sales Order
         unconditionally (no equivalent marker check needed — a sales
@@ -271,11 +266,20 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         marker_param = self.get_setting("OMG_HARNESS_MARKER_PARAM_NAME") or "OMG Harness"
         is_omg_harness = (get_part_parameter_str(part, marker_param) or "").strip().lower() == "true"
 
-        if is_omg_harness:
+        # Shown for any assembly now, not just ones already linked —
+        # Panel.tsx itself checks is_omg_harness (via the same part
+        # parameter, queried through context.api) and renders either
+        # the "link this part to an OMG harness" flow or the existing
+        # "sync/re-import BOM" flow depending on what it finds. This is
+        # deliberately one panel with two states rather than two
+        # separate panels, so linking and then syncing feels like one
+        # continuous flow on the same part page instead of two things
+        # to separately discover.
+        if part.assembly:
             panels.append({
                 "key": "omg-harness-sync",
-                "title": "Sync with OMG",
-                "icon": "ti:refresh:outline",
+                "title": "OMG Harness" if is_omg_harness else "Link to OMG",
+                "icon": "ti:refresh:outline" if is_omg_harness else "ti:link:outline",
                 "source": self.plugin_static_file("Panel.js:RenderOMGHarnessSyncPanel"),
             })
         return panels

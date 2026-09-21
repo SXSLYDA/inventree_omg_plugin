@@ -1,5 +1,5 @@
-import { useCallback, useState } from 'react';
-import { Alert, Badge, Button, Group, NumberInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { useCallback, useEffect, useState } from 'react';
+import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput, Title } from '@mantine/core';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
@@ -27,14 +27,57 @@ interface HarnessSearchResult {
     diagram_status: number;
 }
 
+interface CategoryOption {
+    value: string;
+    label: string;
+}
+
 function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginContext }) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<HarnessSearchResult[]>([]);
     const [searching, setSearching] = useState(false);
     const [searchError, setSearchError] = useState<string | null>(null);
     const [categoryPk, setCategoryPk] = useState<number | ''>('');
+    const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>([]);
+    const [categorySearchTerm, setCategorySearchTerm] = useState('');
+    const [categorySearching, setCategorySearching] = useState(false);
     const [importingPartNumber, setImportingPartNumber] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<{ text: string; isError: boolean } | null>(null);
+
+    // Debounced category search, same 500ms pattern InvenTree's own
+    // SearchInput component uses — searches InvenTree's real category
+    // tree by name as the user types, instead of requiring them to
+    // already know a raw category pk. pathstring (the full breadcrumb,
+    // e.g. "Electronics/Connectors/Automotive") is shown rather than
+    // bare name, since two categories in different branches can share
+    // the same name and would otherwise be indistinguishable in the
+    // dropdown.
+    useEffect(() => {
+        if (categorySearchTerm.trim().length < 2) {
+            setCategoryOptions([]);
+            return;
+        }
+        const timer = setTimeout(async () => {
+            setCategorySearching(true);
+            try {
+                const response = await context.api.get('/api/part/category/', {
+                    params: { search: categorySearchTerm.trim(), limit: 20 },
+                });
+                const rows = response.data?.results ?? response.data ?? [];
+                setCategoryOptions(
+                    rows.map((c: any) => ({
+                        value: String(c.pk),
+                        label: c.pathstring || c.name,
+                    }))
+                );
+            } catch {
+                setCategoryOptions([]);
+            } finally {
+                setCategorySearching(false);
+            }
+        }, 500);
+        return () => clearTimeout(timer);
+    }, [categorySearchTerm, context.api]);
 
     const runSearch = useCallback(async () => {
         if (query.trim().length < 2) {
@@ -106,13 +149,19 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
                     onKeyDown={(e) => e.key === 'Enter' && runSearch()}
                     style={{ flex: 1 }}
                 />
-                <NumberInput
-                    label="Category ID"
+                <Select
+                    label="Category"
                     description="Only needed if this harness doesn't exist in InvenTree yet"
-                    placeholder="optional"
-                    value={categoryPk}
-                    onChange={(v) => setCategoryPk(typeof v === 'number' ? v : '')}
-                    style={{ width: 220 }}
+                    placeholder="Type to search categories"
+                    searchable
+                    clearable
+                    searchValue={categorySearchTerm}
+                    onSearchChange={setCategorySearchTerm}
+                    data={categoryOptions}
+                    value={categoryPk === '' ? null : String(categoryPk)}
+                    onChange={(v) => setCategoryPk(v ? Number(v) : '')}
+                    nothingFoundMessage={categorySearching ? 'Searching…' : 'Type at least 2 characters'}
+                    style={{ width: 280 }}
                 />
                 <Button onClick={runSearch} loading={searching}>Search</Button>
             </Group>
