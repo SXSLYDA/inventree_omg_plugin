@@ -316,17 +316,21 @@ class HarnessSearchProxyView(APIView):
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness-search/",
                 params={"q": query, "limit": 15},
-                # Bearer, not Token - OMG's own auth middleware
-                # (backend.authentication.tokens.TokenAuthenticationMiddleware)
-                # only recognizes "Bearer <jwt>", checked directly against
-                # its source: it never looks at a header starting with
-                # anything else, regardless of whether the token itself
-                # is valid. This is a custom JWT scheme, not DRF's
-                # standard TokenAuthentication (rest_framework.authtoken
-                # isn't even installed in this project) - don't assume
-                # "Token" here just because that's the more common DRF
-                # convention elsewhere.
-                headers={"Authorization": f"Bearer {omg_token}"},
+                # Token, not Bearer - reverted from an earlier fix here.
+                # OMG's harness-search and BOM-export endpoints now use
+                # DRF's own TokenAuthentication (rest_framework.authtoken)
+                # specifically for this credential, rather than the
+                # site-wide JWT middleware ("Bearer <jwt>") used for
+                # normal browser logins — that middleware's cache-based
+                # revocation check wasn't safe across multiple gunicorn
+                # workers (no shared CACHES backend configured), causing
+                # intermittent false 403s regardless of token validity.
+                # DRF's Token is a plain, worker-independent database
+                # row instead. OMG_HARNESS_API_TOKEN must now be a real
+                # DRF token generated for a service-user account (via
+                # OMG's own admin-only token generation on its InvenTree
+                # settings page), not a JWT from a normal login.
+                headers={"Authorization": f"Token {omg_token}"},
                 timeout=10,
             )
             resp.raise_for_status()
@@ -380,9 +384,9 @@ class HarnessImportView(APIView):
         try:
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness/{harness_part_number}/inventree-bom/",
-                # Bearer, not Token - see the identical note on the
-                # harness-search call above; same middleware, same fix.
-                headers={"Authorization": f"Bearer {omg_token}"},
+                # Token, not Bearer - see the identical note on the
+                # harness-search call above; same reasoning, same fix.
+                headers={"Authorization": f"Token {omg_token}"},
                 timeout=15,
             )
             resp.raise_for_status()
