@@ -146,8 +146,11 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
 
             const response = await context.api.post('/plugin/omg-harness-import/import-harness/', body);
             const batch = response.data;
+            const reconciliationWarning = batch.reconciliation_pushed === false
+                ? ' Import succeeded, but reporting the result back to OMG failed — check the InvenTree Webhook Token setting.'
+                : '';
             setImportMessage({
-                text: `Imported ${partNumber} — ${batch.matched_items ?? 0} matched, ${batch.flagged_items ?? 0} need review.`,
+                text: `Imported ${partNumber} — ${batch.matched_items ?? 0} matched, ${batch.flagged_items ?? 0} need review.${reconciliationWarning}`,
                 isError: false,
             });
         } catch (err: any) {

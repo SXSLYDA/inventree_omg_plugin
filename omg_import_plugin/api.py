@@ -138,8 +138,9 @@ class ResolveItemView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
+        reconciliation_pushed = True
         if item.omg_object_type and item.resolved_part_id:
-            push_reconciliation_to_omg(
+            reconciliation_pushed = push_reconciliation_to_omg(
                 item.batch,
                 resolved_matches=[{
                     "omg_object_type": item.omg_object_type,
@@ -148,7 +149,9 @@ class ResolveItemView(APIView):
                 }],
             )
 
-        return Response(UnresolvedItemSerializer(item).data)
+        data = UnresolvedItemSerializer(item).data
+        data["reconciliation_pushed"] = reconciliation_pushed
+        return Response(data)
 
 
 class BatchDetailView(APIView):
@@ -269,6 +272,7 @@ class ResolvePendingView(APIView):
             {"pending_part_id": r["pending_part_id"], "inventree_pk": r["inventree_pk"]}
             for r in results if r["inventree_pk"]
         ]
+        reconciliation_pushed = True
         if resolved:
             # This batch has no single harness_part_number (pending parts
             # can span multiple harnesses), so root_part_number is a
@@ -277,9 +281,9 @@ class ResolvePendingView(APIView):
             from .models import ImportBatch as _Batch
             fake_batch = _Batch(root_part_number="(pending-part sync)")
             fake_batch.items = UnresolvedImportItem.objects.none()
-            push_reconciliation_to_omg(fake_batch, resolved_pending_parts=resolved)
+            reconciliation_pushed = push_reconciliation_to_omg(fake_batch, resolved_pending_parts=resolved)
 
-        return Response({"results": results})
+        return Response({"results": results, "reconciliation_pushed": reconciliation_pushed})
 
 
 # ---------------------------------------------------------------------
@@ -397,9 +401,11 @@ class HarnessImportView(APIView):
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
 
-        push_reconciliation_to_omg(batch, resolved_matches=resolved_matches)  # best-effort — see reconciliation.py
+        reconciliation_pushed = push_reconciliation_to_omg(batch, resolved_matches=resolved_matches)
 
-        return Response(ImportBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
+        data = ImportBatchSerializer(batch).data
+        data["reconciliation_pushed"] = reconciliation_pushed
+        return Response(data, status=status.HTTP_201_CREATED)
 
 
 # Mouser search/create is no longer a custom endpoint here — it lives in

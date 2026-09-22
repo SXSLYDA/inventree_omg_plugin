@@ -143,6 +143,13 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                     : 'Synced — everything matched cleanly.',
                 color: flagged > 0 ? 'yellow' : 'green',
             });
+            if (response.data?.reconciliation_pushed === false) {
+                notifications.show({
+                    title: 'Report-back to OMG failed',
+                    message: 'The sync itself succeeded, but InvenTree could not report the result back to OMG. Check the InvenTree Webhook Token setting.',
+                    color: 'orange',
+                });
+            }
             await loadQueue();
         } catch (err: any) {
             const detail = err?.response?.data?.detail || err.message;
@@ -200,6 +207,13 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                 message: `Linked to ${partNumber} and imported its BOM.`,
                 color: 'green',
             });
+            if (response.data?.reconciliation_pushed === false) {
+                notifications.show({
+                    title: 'Report-back to OMG failed',
+                    message: 'The link/import itself succeeded, but InvenTree could not report the result back to OMG. Check the InvenTree Webhook Token setting.',
+                    color: 'orange',
+                });
+            }
             await loadQueue();
         } catch (err: any) {
             const detail = err?.response?.data?.detail || err.message;
