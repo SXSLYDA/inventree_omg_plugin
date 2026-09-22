@@ -32,6 +32,13 @@ interface CategoryOption {
     label: string;
 }
 
+interface CredentialStatus {
+    omg_harness_api_url: boolean;
+    omg_inventree_user_token: boolean;
+    inventree_webhook_token: boolean;
+    mouser_api_key: boolean;
+}
+
 function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginContext }) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState<HarnessSearchResult[]>([]);
@@ -43,6 +50,25 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
     const [categorySearching, setCategorySearching] = useState(false);
     const [importingPartNumber, setImportingPartNumber] = useState<string | null>(null);
     const [importMessage, setImportMessage] = useState<{ text: string; isError: boolean } | null>(null);
+    // Distinguishes "haven't searched yet" from "searched, zero
+    // matches" — without this, a genuinely empty result silently shows
+    // nothing at all, which reads as "did this even do anything?"
+    // rather than a clear answer.
+    const [hasSearched, setHasSearched] = useState(false);
+    const [credentialStatus, setCredentialStatus] = useState<CredentialStatus | null>(null);
+
+    // Fetched once on mount — this is a small view the plugin defines
+    // itself (see CredentialStatusView in api.py), not InvenTree's own
+    // settings-display API, specifically so it can report the real,
+    // unmasked "is this actually set?" answer that the Plugin Settings
+    // page itself cannot give (confirmed directly: it shows the exact
+    // same masked placeholder whether a credential is genuinely
+    // configured or completely empty).
+    useEffect(() => {
+        context.api.get('/plugin/omg-harness-import/credential-status/')
+            .then((response) => setCredentialStatus(response.data))
+            .catch(() => setCredentialStatus(null));
+    }, [context.api]);
 
     // Debounced category search, same 500ms pattern InvenTree's own
     // SearchInput component uses — searches InvenTree's real category
@@ -88,6 +114,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
         setSearching(true);
         setSearchError(null);
         setImportMessage(null);
+        setHasSearched(true);
 
         try {
             const response = await context.api.get('/plugin/omg-harness-import/harness-search/', {
@@ -140,6 +167,27 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
                 its BOM if it does.
             </Text>
 
+            {credentialStatus && (
+                <Group gap="md">
+                    {([
+                        ['OMG URL', credentialStatus.omg_harness_api_url],
+                        ['OMG User Token', credentialStatus.omg_inventree_user_token],
+                        ['Webhook Token', credentialStatus.inventree_webhook_token],
+                        ['Mouser Key', credentialStatus.mouser_api_key],
+                    ] as [string, boolean][]).map(([label, configured]) => (
+                        <Badge
+                            key={label}
+                            size="sm"
+                            variant="light"
+                            color={configured ? 'green' : 'red'}
+                            leftSection={configured ? '✓' : '✗'}
+                        >
+                            {label}
+                        </Badge>
+                    ))}
+                </Group>
+            )}
+
             <Group gap="xs" align="flex-end">
                 <TextInput
                     label="Search"
@@ -169,6 +217,10 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             {searchError && <Alert color="orange">{searchError}</Alert>}
             {importMessage && (
                 <Alert color={importMessage.isError ? 'red' : 'green'}>{importMessage.text}</Alert>
+            )}
+
+            {hasSearched && !searching && !searchError && results.length === 0 && (
+                <Text size="sm" c="dimmed">No matching harnesses found in OMG for "{query}".</Text>
             )}
 
             {results.length > 0 && (

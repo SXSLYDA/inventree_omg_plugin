@@ -316,20 +316,6 @@ class HarnessSearchProxyView(APIView):
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness-search/",
                 params={"q": query, "limit": 15},
-                # Token, not Bearer - reverted from an earlier fix here.
-                # OMG's harness-search and BOM-export endpoints now use
-                # DRF's own TokenAuthentication (rest_framework.authtoken)
-                # specifically for this credential, rather than the
-                # site-wide JWT middleware ("Bearer <jwt>") used for
-                # normal browser logins — that middleware's cache-based
-                # revocation check wasn't safe across multiple gunicorn
-                # workers (no shared CACHES backend configured), causing
-                # intermittent false 403s regardless of token validity.
-                # DRF's Token is a plain, worker-independent database
-                # row instead. OMG_HARNESS_API_TOKEN must now be a real
-                # DRF token generated for a service-user account (via
-                # OMG's own admin-only token generation on its InvenTree
-                # settings page), not a JWT from a normal login.
                 headers={"Authorization": f"Token {omg_token}"},
                 timeout=10,
             )
@@ -384,8 +370,6 @@ class HarnessImportView(APIView):
         try:
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness/{harness_part_number}/inventree-bom/",
-                # Token, not Bearer - see the identical note on the
-                # harness-search call above; same reasoning, same fix.
                 headers={"Authorization": f"Token {omg_token}"},
                 timeout=15,
             )
@@ -426,6 +410,43 @@ class HarnessImportView(APIView):
 # ever was, so they were removed rather than kept alongside it.
 
 
+class CredentialStatusView(APIView):
+    """
+    GET /plugin/omg-harness-import/credential-status/
+
+    Reports whether each credential is actually configured (non-empty)
+    — nothing about the value itself, just a boolean. Exists because
+    InvenTree's own Plugin Settings page masks every "protected"
+    setting identically whether it holds a real value or is
+    genuinely empty (confirmed directly: clearing OMG_HARNESS_API_TOKEN
+    to blank and reloading that page shows the exact same masked
+    placeholder as when a real token is set) — so the settings page
+    itself cannot answer "did this actually get configured?" at all.
+
+    This sidesteps that entirely by not going through InvenTree's
+    settings-display API in the first place: it's a small view this
+    plugin defines itself, reading the real, unmasked value
+    server-side via get_setting(), same as anywhere else in this file.
+    Only ever returns True/False per key — the actual credential
+    values themselves are never included in this response.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from plugin.registry import registry
+        plugin = registry.get_plugin("omg-harness-import")
+
+        def is_set(key):
+            return bool((plugin.get_setting(key) if plugin else "") or "")
+
+        return Response({
+            "omg_harness_api_url": is_set("OMG_HARNESS_API_URL"),
+            "omg_inventree_user_token": is_set("OMG_HARNESS_API_TOKEN"),
+            "inventree_webhook_token": is_set("OMG_INBOUND_WEBHOOK_TOKEN"),
+            "mouser_api_key": is_set("OMG_MOUSER_API_KEY"),
+        })
+
+
 from .sales_order_export import SalesOrderPartsListExportView
 
 urlpatterns = [
@@ -439,4 +460,5 @@ urlpatterns = [
     path("resolve-pending/", ResolvePendingView.as_view(), name="omg-resolve-pending"),
     path("harness-search/", HarnessSearchProxyView.as_view(), name="omg-harness-search"),
     path("import-harness/", HarnessImportView.as_view(), name="omg-import-harness"),
+    path("credential-status/", CredentialStatusView.as_view(), name="omg-credential-status"),
 ]

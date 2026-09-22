@@ -73,6 +73,11 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [searchError, setSearchError] = useState<string | null>(null);
     const [results, setResults] = useState<HarnessSearchResult[]>([]);
     const [linkingPartNumber, setLinkingPartNumber] = useState<string | null>(null);
+    // Same reasoning as ImportHarnessPanel.tsx's dashboard widget —
+    // distinguishes "haven't searched yet" from "searched, zero
+    // matches", so a genuinely empty result gives a clear answer
+    // instead of silently showing nothing at all.
+    const [hasSearched, setHasSearched] = useState(false);
 
     const partId = context.id;
 
@@ -161,6 +166,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         }
         setSearching(true);
         setSearchError(null);
+        setHasSearched(true);
         try {
             const response = await context.api.get('/plugin/omg-harness-import/harness-search/', {
                 params: { q: query.trim() },
@@ -268,6 +274,10 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
 
                 {searchError && <Alert color="orange">{searchError}</Alert>}
                 {error && <Alert color="red" title="Link issue">{error}</Alert>}
+
+                {hasSearched && !searching && !searchError && results.length === 0 && (
+                    <Text size="sm" c="dimmed">No matching harnesses found in OMG for "{query}".</Text>
+                )}
 
                 {results.length > 0 && (
                     <Stack gap={6}>

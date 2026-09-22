@@ -73,22 +73,24 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "default": "",
         },
         "OMG_HARNESS_API_TOKEN": {
-            "name": "OMG Harness API Token",
+            "name": "OMG InvenTree User Token",
             "description": "Lets this plugin search and pull harness designs from your OMG Harness "
                             "account. Generate this on OMG's own InvenTree Settings page and paste it "
-                            "here. This is a different credential from the Inbound Webhook Token below "
-                            "— they're not interchangeable, so don't paste one where the other goes.",
+                            "here. This is a different credential from the InvenTree Webhook Token "
+                            "below — they're not interchangeable, so don't paste one where the other "
+                            "goes.",
             "default": "",
             "protected": True,
         },
         "OMG_INBOUND_WEBHOOK_TOKEN": {
-            "name": "OMG Inbound Webhook Token",
+            "name": "InvenTree Webhook Token",
             "description": "Lets OMG know it's really this plugin reporting back after an import — "
                             "which parts matched, and which need a person to look at them. Copy this "
                             "exact value from OMG's own InvenTree Settings page (it's generated "
                             "automatically there, not something you make up yourself). Different "
-                            "credential from the API Token above — copying the wrong one here will "
-                            "make imports work fine but reports back to OMG silently fail.",
+                            "credential from the OMG InvenTree User Token above — copying the wrong "
+                            "one here will make imports work fine but reports back to OMG silently "
+                            "fail.",
             "default": "",
             "protected": True,
         },
@@ -107,7 +109,7 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "validator": bool,
             "default": False,
         },
-        # --- Harness import behavior ---
+        # --- InvenTree parameter mapping: connector-level ---
         "OMG_CAVITY_LAYOUT_PARAM_NAME": {
             "name": "Cavity Layout Parameter Name",
             "description": "InvenTree part parameter name holding a connector's real, comma-separated "
@@ -115,6 +117,14 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                             "Part detail page. Skipped letters (I/O/Q etc.) just aren't listed. Used for "
                             "an exact blanks-needed calculation instead of a count-based guess.",
             "default": "Cavity Layout",
+        },
+        "OMG_CONTACT_COUNT_PARAM_NAME": {
+            "name": "Contact Count Parameter Name (fallback only)",
+            "description": "InvenTree part parameter name holding a connector's total cavity count. "
+                            "Only used as an APPROXIMATE blanks-needed fallback for connectors that "
+                            "don't have a Cavity Layout parameter set yet — once Cavity Layout exists "
+                            "for a connector, this is ignored for it.",
+            "default": "Contact Count",
         },
         "OMG_COMPONENT_TYPE_PARAM_NAME": {
             "name": "Component Type Parameter Name",
@@ -125,6 +135,7 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                             "role/type field.",
             "default": "Component Type",
         },
+        # --- InvenTree parameter mapping: conductor-level ---
         "OMG_GAUGE_PARAM_NAME": {
             "name": "Gauge Parameter Name",
             "description": "InvenTree part parameter name holding a conductor's wire gauge/size — "
@@ -148,14 +159,6 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                             "wire color, for two-color wires. Leave the default if you don't use these.",
             "default": "Secondary Color",
         },
-        "OMG_CONTACT_COUNT_PARAM_NAME": {
-            "name": "Contact Count Parameter Name (fallback only)",
-            "description": "InvenTree part parameter name holding a connector's total cavity count. "
-                            "Only used as an APPROXIMATE blanks-needed fallback for connectors that "
-                            "don't have a Cavity Layout parameter set yet — once Cavity Layout exists "
-                            "for a connector, this is ignored for it.",
-            "default": "Contact Count",
-        },
         # --- Per-pin contact selection, when a connector has more than one
         # contact variant (different gauge ranges, different plating) ---
         "OMG_CONTACT_MIN_GAUGE_PARAM_NAME": {
@@ -174,6 +177,7 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                             "one Contact-tagged Related Part.",
             "default": "Max Gauge",
         },
+        # --- Harness import behavior ---
         "OMG_HARNESS_MARKER_PARAM_NAME": {
             "name": "OMG Harness Marker Parameter Name",
             "description": "InvenTree part parameter name used to mark a part as an OMG-managed "
