@@ -17,7 +17,6 @@ Uses the same mouser_lookup package as everything else in this project —
 no separate Mouser API client, no duplicated parsing logic.
 """
 
-from django.conf import settings
 from django.db.models import Q
 
 from company.models import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
@@ -40,7 +39,18 @@ class MouserSupplierMixin(SupplierMixin):
         return [supplier.Supplier(slug="mouser", name="Mouser Electronics")]
 
     def get_search_results(self, supplier_slug, term):
-        api_key = getattr(settings, "OMG_MOUSER_API_KEY", None)
+        # get_setting(), not django.conf.settings - this is InvenTree's
+        # own PLUGIN settings API (same one line 125 below already uses
+        # correctly for OMG_DOWNLOAD_MOUSER_IMAGES). OMG_MOUSER_API_KEY
+        # is declared as a plugin setting in core.py, not a Django
+        # settings.py value - django.conf.settings.OMG_MOUSER_API_KEY
+        # was never going to exist there, so this always silently
+        # returned None -> "if not api_key: return []" -> empty search
+        # results with no error, which is exactly the reported "Mouser
+        # import isn't working, not sure why" symptom. Confirmed
+        # directly against api.py's own is_set() helper, which uses
+        # plugin.get_setting() for this identical setting.
+        api_key = self.get_setting("OMG_MOUSER_API_KEY")
         if not api_key:
             return []
 
@@ -72,7 +82,7 @@ class MouserSupplierMixin(SupplierMixin):
         cache needed since mouser_lookup's own search() already caches
         short-term (see inventree_lookup.py's equivalent pattern).
         """
-        api_key = getattr(settings, "OMG_MOUSER_API_KEY", None)
+        api_key = self.get_setting("OMG_MOUSER_API_KEY")
         results = search_by_mpn(part_id, api_key) if api_key else []
         exact = [r for r in results if r["mpn"].strip().lower() == part_id.strip().lower()]
         if exact:
@@ -102,8 +112,10 @@ class MouserSupplierMixin(SupplierMixin):
         # actually-required field). get_or_create() can't take a Q
         # object in its lookup kwargs, so this is a manual find-then-
         # create instead of a single get_or_create() call — checks name
-        # first (what's actually populated in practice), IPN too since
-        # it's harmless and forward-compatible if it's ever used.
+        # first (what's actually populated in practice); IPN is still
+        # checked too (harmless if a part happens to have it set for
+        # some other reason), but is no longer WRITTEN on create -
+        # explicitly not wanted, confirmed directly.
         part = Part.objects.filter(
             Q(name__iexact=data["mpn"]) | Q(IPN__iexact=data["mpn"]), purchaseable=True,
         ).first()
@@ -111,7 +123,6 @@ class MouserSupplierMixin(SupplierMixin):
         if not part:
             part = Part.objects.create(
                 name=data["mpn"],
-                IPN=data["mpn"],
                 description=data.get("description") or "",
                 link=data.get("url") or "",
                 category=category,

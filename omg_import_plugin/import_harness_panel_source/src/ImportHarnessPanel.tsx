@@ -49,7 +49,11 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
     const [categorySearchTerm, setCategorySearchTerm] = useState('');
     const [categorySearching, setCategorySearching] = useState(false);
     const [importingPartNumber, setImportingPartNumber] = useState<string | null>(null);
-    const [importMessage, setImportMessage] = useState<{ text: string; isError: boolean } | null>(null);
+    // partPk only set on a successful import - lets the success Alert
+    // offer a "Review in InvenTree" button straight to that part's own
+    // OMG Harness Sync panel, rather than leaving the person to find it
+    // themselves after being told an import succeeded.
+    const [importMessage, setImportMessage] = useState<{ text: string; isError: boolean; partPk?: number } | null>(null);
     // Distinguishes "haven't searched yet" from "searched, zero
     // matches" — without this, a genuinely empty result silently shows
     // nothing at all, which reads as "did this even do anything?"
@@ -152,6 +156,13 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             setImportMessage({
                 text: `Imported ${partNumber} — ${batch.matched_items ?? 0} matched, ${batch.flagged_items ?? 0} need review.${reconciliationWarning}`,
                 isError: false,
+                // root_part serializes as a plain pk (ImportBatchSerializer
+                // is a bare ModelSerializer with no custom field declared
+                // for it, confirmed directly against api.py) - null only
+                // if the harness part somehow doesn't exist, which
+                // shouldn't happen given import_or_update_harness_bom
+                // always creates or resolves one first.
+                partPk: batch.root_part ?? undefined,
             });
         } catch (err: any) {
             const detail = err?.response?.data?.detail || err.message;
@@ -219,7 +230,22 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
 
             {searchError && <Alert color="orange">{searchError}</Alert>}
             {importMessage && (
-                <Alert color={importMessage.isError ? 'red' : 'green'}>{importMessage.text}</Alert>
+                <Alert color={importMessage.isError ? 'red' : 'green'}>
+                    <Stack gap={6}>
+                        <Text size="sm">{importMessage.text}</Text>
+                        {importMessage.partPk !== undefined && (
+                            <Group>
+                                <Button
+                                    size="xs"
+                                    variant="light"
+                                    onClick={() => context.navigate(`/part/${importMessage.partPk}/omg-harness-sync`)}
+                                >
+                                    Review in InvenTree
+                                </Button>
+                            </Group>
+                        )}
+                    </Stack>
+                </Alert>
             )}
 
             {hasSearched && !searching && !searchError && results.length === 0 && (
@@ -227,7 +253,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             )}
 
             {results.length > 0 && (
-                <Stack gap={6}>
+                <Stack gap={6} style={{ maxHeight: 220, overflowY: 'auto' }}>
                     {results.map((r) => (
                         <Group key={r.id} justify="space-between" wrap="nowrap"
                                style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 4, padding: '8px 12px' }}>

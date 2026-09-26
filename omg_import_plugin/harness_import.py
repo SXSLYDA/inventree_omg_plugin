@@ -160,9 +160,20 @@ def _flag_connector(batch, connector_id, label, message, candidate_pks=None):
     )
 
 
-def _flag_wire(batch, wire_id, message, candidate_pks=None):
+def _flag_wire(batch, wire_id, message, candidate_pks=None, wire_no=None):
+    """
+    wire_no vs wire_id: wire_id is OMG's own database pk for this wire
+    (used below as omg_object_id, which reconciliation.py needs to
+    identify the exact record) - it was ALSO being shown to the user
+    in part_number as "OMG wire #<pk>", which is a meaningless internal
+    id, not the actual wire number a person would recognize from their
+    own harness design. wire_no (OMG's own human-readable wire number
+    field, WireNo in the OMG app's own model) is what should display
+    instead - falls back to wire_id only if a caller doesn't have it,
+    so this never regresses to showing nothing.
+    """
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG wire #{wire_id}", quantity=1,
+        batch=batch, part_number=f"OMG wire #{wire_no if wire_no is not None else wire_id}", quantity=1,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.WIRE, omg_object_id=wire_id,
@@ -244,7 +255,8 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
             gauge = pin.get("conductor_size")
             if gauge is None:
                 _flag_wire(batch, pin["wire_id"], "This wire has no gauge set yet, and its connector has "
-                                                   "multiple contact variants — can't tell which contact it needs.")
+                                                   "multiple contact variants — can't tell which contact it needs.",
+                           wire_no=pin.get("wire_no"))
                 continue
             contact_part, status = native.select_contact_for_gauge(
                 contact_candidates, gauge,
@@ -255,11 +267,13 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
                 _flag_wire(batch, pin["wire_id"],
                            f"This wire's gauge ({gauge}) matches more than one contact variant on "
                            f"{part.name or part.IPN} — narrow their Min/Max Gauge parameters so they don't overlap, "
-                           f"or remove the extra Related Part.")
+                           f"or remove the extra Related Part.",
+                           wire_no=pin.get("wire_no"))
             else:
                 _flag_wire(batch, pin["wire_id"],
                            f"No contact variant on {part.name or part.IPN} covers this wire's gauge ({gauge}) — "
-                           f"add one, or fix its Min/Max Gauge parameters.")
+                           f"add one, or fix its Min/Max Gauge parameters.",
+                           wire_no=pin.get("wire_no"))
         for pk, qty in contact_qty.items():
             from part.models import Part as _Part
             additions.append((_Part.objects.get(pk=pk), qty))
@@ -359,16 +373,16 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
         # name is checked first — a real screenshot of this project's
         # actual InvenTree "Edit Part" form confirmed IPN is genuinely
         # never used (empty, not required) while the real part number
-        # goes into name (the actually-required field). IPN stays
-        # checked too since it's harmless and forward-compatible if
-        # it's ever used.
+        # goes into name (the actually-required field). IPN is still
+        # checked in the lookup below (harmless if a part happens to
+        # have it set for some other reason), but is no longer WRITTEN
+        # on create - explicitly not wanted, confirmed directly.
         harness_part = Part.objects.filter(
             Q(name__iexact=harness_part_number) | Q(IPN__iexact=harness_part_number)
         ).first()
         if not harness_part:
             harness_part = Part.objects.create(
                 name=harness_part_number,
-                IPN=harness_part_number,
                 description=omg_bom_data.get("harness_description") or "",
                 category_id=category_pk,
                 active=True, virtual=False, assembly=True,
@@ -454,11 +468,12 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
             _upsert_bom_line(harness_part, sub_part, quantity)
             seen_sub_part_pks.add(sub_part.pk)
 
-    conductor_agg = defaultdict(lambda: {"length_m": 0.0, "wire_ids": []})
+    conductor_agg = defaultdict(lambda: {"length_m": 0.0, "wire_ids": [], "wire_no_by_id": {}})
 
     for w in omg_bom_data.get("conductors", []):
         if w.get("pending_part_id") and not w.get("inventree_pk"):
-            _flag_wire(batch, w["wire_id"], "Still a pending part in OMG (not yet in InvenTree) — resolve pending parts before re-running this import.")
+            _flag_wire(batch, w["wire_id"], "Still a pending part in OMG (not yet in InvenTree) — resolve pending parts before re-running this import.",
+                       wire_no=w.get("wire_no"))
             continue
 
         pk = w.get("inventree_pk")
@@ -494,17 +509,21 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
                     batch, w["wire_id"],
                     "Multiple InvenTree parts match this conductor — choose which one is correct.",
                     candidate_pks=candidate_pks,
+                    wire_no=w.get("wire_no"),
                 )
                 continue
 
             if resolved_pk is None:
                 if not part_no:
-                    _flag_wire(batch, w["wire_id"], "No conductor part selected or typed for this wire in OMG yet, and no gauge/size to search by.")
+                    _flag_wire(batch, w["wire_id"], "No conductor part selected or typed for this wire in OMG yet, and no gauge/size to search by.",
+                               wire_no=w.get("wire_no"))
                     continue
                 if description:
-                    _flag_wire(batch, w["wire_id"], NOT_IN_INVENTREE_WITH_DESCRIPTION_MESSAGE.format(part_no=part_no, description=description))
+                    _flag_wire(batch, w["wire_id"], NOT_IN_INVENTREE_WITH_DESCRIPTION_MESSAGE.format(part_no=part_no, description=description),
+                               wire_no=w.get("wire_no"))
                 else:
-                    _flag_wire(batch, w["wire_id"], NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no))
+                    _flag_wire(batch, w["wire_id"], NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no),
+                               wire_no=w.get("wire_no"))
                 continue
 
             pk = resolved_pk
@@ -512,13 +531,15 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
 
         conductor_agg[pk]["length_m"] += w.get("length_m", 0)
         conductor_agg[pk]["wire_ids"].append(w["wire_id"])
+        conductor_agg[pk]["wire_no_by_id"][w["wire_id"]] = w.get("wire_no")
 
     for pk, agg in conductor_agg.items():
         try:
             part = Part.objects.get(pk=pk)
         except Part.DoesNotExist:
             for wid in agg["wire_ids"]:
-                _flag_wire(batch, wid, "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
+                _flag_wire(batch, wid, "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?",
+                           wire_no=agg["wire_no_by_id"].get(wid))
             continue
 
         _upsert_bom_line(harness_part, part, round(agg["length_m"], 4))

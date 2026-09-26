@@ -51,6 +51,10 @@ cd ../import_harness_panel_source
 npm install
 npm run build
 ```
+or run powershell script .ps1 which will build and bump version
+```bash
+.\build-and-bump.ps1
+```
 
 Build order doesn't matter, and none of these dependencies need a C/C++
 compiler (Vite/esbuild/Biome all ship pre-built platform binaries).
