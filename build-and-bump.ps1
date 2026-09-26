@@ -41,6 +41,24 @@ $panels = [ordered]@{
     "import_harness_panel_source" = "ImportHarnessPanel"
 }
 $staticPath = Join-Path $root "omg_import_plugin\static"
+$manifestPath = Join-Path $staticPath ".vite\manifest.json"
+# Each panel's own Vite build writes manifest: true output directly to
+# this SAME shared static/.vite/manifest.json (all three panels' own
+# vite.config.ts point dir at '../static') - so each build was
+# completely OVERWRITING the previous panel's manifest entry rather
+# than adding to it. Confirmed directly: with the panels below built
+# in this order, only ImportHarnessPanel's entry ever survived to the
+# end, meaning Panel.js and SOExportPanel.js never actually got
+# InvenTree's cache-busting (finds a manifest entry -> serves the
+# hashed file instead of the plain one - see inventree/InvenTree#11565,
+# 1.3.0+) - they were always served under their plain, non-hashed
+# filename, which browsers can cache indefinitely across a plugin
+# update. This is collected into $mergedManifest below (one entry
+# captured right after each panel's own build, before the next
+# iteration's build can overwrite it) and written back as a single
+# combined manifest with all three panels' entries once every build is
+# done, rather than just whichever ran last.
+$mergedManifest = [ordered]@{}
 
 foreach ($panel in $panels.Keys) {
     $prefix = $panels[$panel]
@@ -68,11 +86,35 @@ foreach ($panel in $panels.Keys) {
         if ($LASTEXITCODE -ne 0) { throw "npm install failed for $panel" }
         npm run build
         if ($LASTEXITCODE -ne 0) { throw "npm run build failed for $panel" }
+
+        # Capture THIS panel's own manifest entry right now, before the
+        # next panel's build overwrites manifest.json - see the note
+        # above $mergedManifest's declaration for why this is needed at
+        # all. Each panel's own manifest.json only ever has one entry
+        # (that panel's single .tsx source), so this just needs to be
+        # added into the running merged set, not filtered or matched.
+        if (Test-Path $manifestPath) {
+            $panelManifest = Get-Content $manifestPath -Raw | ConvertFrom-Json
+            foreach ($entryKey in $panelManifest.PSObject.Properties.Name) {
+                $mergedManifest[$entryKey] = $panelManifest.$entryKey
+            }
+        }
+        else {
+            Write-Warning "No manifest.json found after building $panel at $manifestPath - its cache-busting entry will be missing from the final merged manifest."
+        }
     }
     finally {
         Pop-Location
     }
 }
+
+# Write the combined manifest (all three panels' entries together) back
+# over whichever single panel's manifest happened to be last on disk -
+# this is what actually fixes cache-busting for every panel except
+# whichever one is built last in $panels above, not just that one.
+$mergedManifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -NoNewline
+Write-Host ""
+Write-Host "Merged manifest.json now covers $($mergedManifest.Count) panel(s): $($mergedManifest.Keys -join ', ')" -ForegroundColor Cyan
 
 # Bump the version. setup.py doesn't hold a literal version string
 # itself - it imports OMG_IMPORT_PLUGIN_VERSION from

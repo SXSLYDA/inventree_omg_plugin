@@ -221,12 +221,17 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "description": "Search OMG's harness part numbers and import them into InvenTree.",
             "icon": "ti:file-import:outline",
             "source": self.plugin_static_file("ImportHarnessPanel.js:RenderOMGImportHarnessDashboardItem"),
-            # Bumped from height 3 - the credential status badges row
-            # added after this was first sized pushed real content
-            # below the widget's visible area, on top of which search
-            # results themselves need room to appear without also
-            # getting clipped.
-            "options": {"width": 4, "height": 5},
+            # Height bumped again (3 -> 5 -> 8): even at 5, the success/
+            # error Alert (which can include the "Review in InvenTree"
+            # button) pushed the results list itself out of the visible
+            # area whenever both were showing at once - the widget never
+            # scrolls its own outer height, only the results list does
+            # (see ImportHarnessPanel.tsx's own maxHeight on that Stack),
+            # so the fixed dashboard-grid height has to actually fit
+            # credential badges + search row + message + a few results
+            # together, not just whichever one the person is looking at
+            # in the moment.
+            "options": {"width": 4, "height": 8},
         }]
 
     def get_ui_panels(self, request, context: dict, **kwargs):

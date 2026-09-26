@@ -51,10 +51,6 @@ cd ../import_harness_panel_source
 npm install
 npm run build
 ```
-or run powershell script .ps1 which will build and bump version
-```bash
-.\build-and-bump.ps1
-```
 
 Build order doesn't matter, and none of these dependencies need a C/C++
 compiler (Vite/esbuild/Biome all ship pre-built platform binaries).
@@ -122,6 +118,93 @@ files, all in one step.
 
 After it finishes, go to Settings → Plugins, find OmgHarnessImport, and
 activate it.
+
+## Automated deployment (GitHub Actions)
+
+Every push to `main` can SSH into the droplet and run the exact same
+two commands described above (`inventree run invoke update` +
+`inventree restart`) automatically — no manual SSH session needed for
+routine updates.
+
+### Setup
+
+1. **Add the workflow file** at `.github/workflows/deploy.yml`:
+
+   ```yaml
+   name: Deploy OMG InvenTree Plugin
+
+   on:
+     push:
+       branches: [main]
+
+   jobs:
+     deploy:
+       runs-on: ubuntu-latest
+       steps:
+         - name: SSH into droplet and update InvenTree
+           uses: appleboy/ssh-action@v1.0.3
+           with:
+             host: ${{ secrets.INVENTREE_HOST }}
+             username: ${{ secrets.INVENTREE_SSH_USER }}
+             key: ${{ secrets.INVENTREE_SSH_KEY }}
+             script: |
+               inventree run invoke update
+               inventree restart
+   ```
+
+   On Windows, `.github` can't reliably be created through Explorer's
+   "New Folder" dialog (a well-known quirk with leading-dot folder
+   names) — use PowerShell instead: `mkdir .github\workflows`.
+
+2. **Generate a dedicated SSH key pair** (don't reuse a personal one) —
+   on your own machine, anywhere outside this repo:
+
+   ```powershell
+   ssh-keygen -t ed25519 -f github-deploy-key -N ""
+   ```
+
+3. **Public key → the droplet.** SSH in as the same user the manual
+   commands above are run as (`root`, per this project's own droplet),
+   and append `github-deploy-key.pub`'s contents to that user's
+   `~/.ssh/authorized_keys`.
+
+4. **Private key → GitHub, as a secret — never the repo itself.** Repo
+   → Settings → Secrets and variables → Actions → New repository
+   secret. Add three:
+
+   | Secret name | Value |
+   |---|---|
+   | `INVENTREE_HOST` | The droplet's IP or domain |
+   | `INVENTREE_SSH_USER` | The user from step 3 (`root`) |
+   | `INVENTREE_SSH_KEY` | Full contents of `github-deploy-key` (the private key) |
+
+5. Commit and push `.github/workflows/deploy.yml` itself — after that,
+   every future push to `main` triggers the deploy automatically.
+
+### The one thing that will bite you if forgotten
+
+**See "Known issue #3" below.** `inventree run invoke update` silently
+does nothing if `setup.py`'s version string hasn't changed since the
+last install — pip skips reinstalling an already-matching version, even
+though the underlying commit is genuinely different. This isn't unique
+to the automated workflow; it's exactly as true when run manually. But
+automation removes the moment where a person might notice the update
+finished "too fast" or double-check the file timestamps — the GitHub
+Action will report a clean, green success on every run, whether or not
+anything actually changed on the server.
+
+**Always run `build-and-bump.ps1` before pushing.** It bumps the
+version automatically as part of the build, which is exactly what
+makes each push's automated deploy actually take effect. A push that
+skips this script (e.g. a quick one-line edit made directly on
+GitHub's own web editor) will trigger a workflow run that succeeds
+without updating anything.
+
+### Verifying an automated deploy actually worked
+
+Same checks as the manual "Verifying a working install" section below
+apply here unchanged — the automation doesn't change what "working"
+looks like, only who types the commands.
 
 ## Known issues and how they were solved
 

@@ -174,7 +174,40 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
 
     return (
         <Stack gap="sm">
-            <Title order={4}>Import harness from OMG</Title>
+            <Group gap={8} wrap="nowrap">
+                {/*
+                  Inline SVG rather than pulling in @tabler/icons-react -
+                  that package isn't a dependency of this panel yet, and
+                  adding it means editing package.json plus an npm
+                  install as part of the next build, more risk than
+                  wanted right before a rebuild+redeploy. A simple
+                  file-import glyph, close to Tabler's own "file-import"
+                  icon used in this item's own core.py declaration
+                  (which only affects the dashboard's "add widget"
+                  picker, not this widget's own rendered content - hence
+                  showing no icon at all before this fix, confirmed
+                  directly from a screenshot of the actual rendering).
+                */}
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={context.theme.colors[context.theme.primaryColor][6]} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
+                    <path d="M5 12v-7a2 2 0 0 1 2 -2h7l5 5v4" />
+                    <path d="M5 15l4 4" />
+                    <path d="M5 19l4 -4" />
+                </svg>
+                {/*
+                  c={context.theme.primaryColor} rather than a hardcoded
+                  "blue"/"indigo" - matches whatever theme color is
+                  actually active on this InvenTree instance (confirmed
+                  from a screenshot: every native dashboard item's own
+                  title uses this same accent color, plain black here
+                  was the actual visible mismatch against them, not a
+                  missing title - removing the title entirely, tried
+                  briefly on the assumption the dashboard grid already
+                  showed one of its own, was confirmed wrong from that
+                  same screenshot: the title only ever appeared once).
+                */}
+                <Title order={4} c={context.theme.primaryColor}>Import harness from OMG</Title>
+            </Group>
             <Text size="sm" c="dimmed">
                 Search OMG's harness part numbers, then import — creates the
                 harness's InvenTree part if it doesn't exist yet, or updates

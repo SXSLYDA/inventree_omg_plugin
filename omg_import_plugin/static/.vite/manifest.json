@@ -1,8 +1,20 @@
 {
-  "src/ImportHarnessPanel.tsx": {
-    "file": "ImportHarnessPanel-CJNA1053.js",
-    "name": "ImportHarnessPanel",
-    "src": "src/ImportHarnessPanel.tsx",
-    "isEntry": true
-  }
+    "src/Panel.tsx":  {
+                          "file":  "Panel-Bwtm04HK.js",
+                          "name":  "Panel",
+                          "src":  "src/Panel.tsx",
+                          "isEntry":  true
+                      },
+    "src/SOExportPanel.tsx":  {
+                                  "file":  "SOExportPanel-C4TEh1fk.js",
+                                  "name":  "SOExportPanel",
+                                  "src":  "src/SOExportPanel.tsx",
+                                  "isEntry":  true
+                              },
+    "src/ImportHarnessPanel.tsx":  {
+                                       "file":  "ImportHarnessPanel-DQhQFysD.js",
+                                       "name":  "ImportHarnessPanel",
+                                       "src":  "src/ImportHarnessPanel.tsx",
+                                       "isEntry":  true
+                                   }
 }

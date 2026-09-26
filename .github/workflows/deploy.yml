@@ -1,0 +1,30 @@
+name: Deploy OMG InvenTree Plugin
+
+# Runs only on pushes to main - adjust the branch name below if your
+# default branch is called something else (e.g. master).
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: SSH into droplet and update InvenTree
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.INVENTREE_HOST }}
+          username: ${{ secrets.INVENTREE_SSH_USER }}
+          key: ${{ secrets.INVENTREE_SSH_KEY }}
+          script: |
+            # `inventree run invoke update` already handles pulling and
+            # (re)installing the plugin correctly - confirmed directly:
+            # a bare `pip install` on this droplet used the SYSTEM
+            # Python (3.8.10) instead of whatever venv InvenTree's own
+            # installer actually uses, and failed outright on
+            # mouser-lookup's >=3.9 requirement. `invoke update` is the
+            # same single command already run manually before this
+            # workflow existed, and it "does all" - no separate pip
+            # install step needed, or wanted, alongside it.
+            inventree run invoke update
+            inventree restart
