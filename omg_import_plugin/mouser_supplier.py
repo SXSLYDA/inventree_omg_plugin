@@ -17,6 +17,8 @@ Uses the same mouser_lookup package as everything else in this project —
 no separate Mouser API client, no duplicated parsing logic.
 """
 
+import logging
+
 from django.db.models import Q
 
 from company.models import Company, ManufacturerPart, SupplierPart, SupplierPriceBreak
@@ -25,6 +27,8 @@ from plugin.base.supplier import helpers as supplier
 from plugin.base.supplier.mixins import SupplierMixin
 
 from mouser_lookup import search_by_mpn
+
+logger = logging.getLogger(__name__)
 
 
 class MouserSupplierMixin(SupplierMixin):
@@ -119,7 +123,6 @@ class MouserSupplierMixin(SupplierMixin):
         part = Part.objects.filter(
             Q(name__iexact=data["mpn"]) | Q(IPN__iexact=data["mpn"]), purchaseable=True,
         ).first()
-        created = False
         if not part:
             part = Part.objects.create(
                 name=data["mpn"],
@@ -130,14 +133,35 @@ class MouserSupplierMixin(SupplierMixin):
                 active=True,
                 virtual=False,
             )
-            created = True
 
-        if created and data.get("image") and self.get_setting("OMG_DOWNLOAD_MOUSER_IMAGES", False):
+        # Was `if created and data.get("image") and ...` - only ever
+        # downloaded an image for a part created THIS exact call.
+        # Confirmed as the actual bug: the setting was already enabled,
+        # yet no image appeared - because the part being imported
+        # already existed in InvenTree (matched by the name/IPN lookup
+        # above), so `created` was False and this whole block was
+        # skipped, even though that existing part had no image of its
+        # own yet. `not part.image` instead - downloads whenever the
+        # part is missing an image, regardless of whether the Part
+        # record itself was just created this call or already existed
+        # from an earlier import/pending-part resolution.
+        if not part.image and data.get("image") and self.get_setting("OMG_DOWNLOAD_MOUSER_IMAGES", False):
             try:
                 file, fmt = self.download_image(data["image"])
                 part.image.save(f"part_{part.pk}_image.{fmt.lower()}", file)
-            except Exception:
-                pass  # image download failing shouldn't block the part import itself
+            except Exception as exc:
+                # Was a bare `except Exception: pass` - genuinely
+                # necessary that a failed image download never blocks
+                # the part import itself, but that silently swallowed
+                # the actual reason too, with no way to tell afterward
+                # whether it was a bad/expired image URL, a format PIL
+                # couldn't handle, or a storage/permissions issue on
+                # this server. Logging it (not raising) keeps the same
+                # non-blocking behavior while making a future failure
+                # actually diagnosable via Settings -> System -> Error
+                # Logs, instead of a part just quietly ending up with
+                # no image and no trace of why.
+                logger.warning("Failed to download/save Mouser image for part %s: %s", part.pk, exc)
 
         return part
 

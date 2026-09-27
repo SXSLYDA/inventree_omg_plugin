@@ -10,21 +10,35 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: SSH into droplet and update InvenTree
+      - name: SSH into droplet, ensure plugin is registered, and update
         uses: appleboy/ssh-action@v1.0.3
         with:
           host: ${{ secrets.INVENTREE_HOST }}
           username: ${{ secrets.INVENTREE_SSH_USER }}
           key: ${{ secrets.INVENTREE_SSH_KEY }}
           script: |
-            # `inventree run invoke update` already handles pulling and
-            # (re)installing the plugin correctly - confirmed directly:
-            # a bare `pip install` on this droplet used the SYSTEM
-            # Python (3.8.10) instead of whatever venv InvenTree's own
-            # installer actually uses, and failed outright on
-            # mouser-lookup's >=3.9 requirement. `invoke update` is the
-            # same single command already run manually before this
-            # workflow existed, and it "does all" - no separate pip
-            # install step needed, or wanted, alongside it.
+            # Idempotent: grep -qxF checks for this EXACT line already
+            # present (quiet, whole-line, fixed-string match, not a
+            # regex) before appending - so running this on every push
+            # never creates duplicate lines in plugins.txt. This is
+            # what makes the same workflow work identically whether the
+            # plugin was ever manually added before or not: a brand-new
+            # InvenTree instance gets it added on the very first run,
+            # an existing one just sees this step do nothing and moves
+            # straight to the update.
+            #
+            # Path confirmed specific to this project's own deployment
+            # type (DigitalOcean's package/packager.io installer, per
+            # this repo's own README) - a Docker-based InvenTree install
+            # keeps its plugins.txt somewhere under /opt/inventree/data/
+            # instead, and would need this path changed accordingly.
+            PLUGIN_LINE="inventree-omg-harness-import @ git+https://github.com/SXSLYDA/inventree_omg_plugin.git"
+            PLUGINS_FILE="/etc/inventree/plugins.txt"
+            # 2>/dev/null: on a genuinely fresh instance where this file
+            # doesn't exist yet at all, grep would otherwise print a
+            # harmless "no such file" warning before falling through to
+            # the same append-creates-it behavior either way.
+            grep -qxF "$PLUGIN_LINE" "$PLUGINS_FILE" 2>/dev/null || echo "$PLUGIN_LINE" >> "$PLUGINS_FILE"
+
             inventree run invoke update
             inventree restart

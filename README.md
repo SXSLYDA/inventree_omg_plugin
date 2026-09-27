@@ -121,10 +121,19 @@ activate it.
 
 ## Automated deployment (GitHub Actions)
 
-Every push to `main` can SSH into the droplet and run the exact same
-two commands described above (`inventree run invoke update` +
-`inventree restart`) automatically — no manual SSH session needed for
+Every push to `main` can SSH into the droplet, ensure the plugin is
+registered in `plugins.txt` (adding it if it isn't there yet), and run
+the same two commands described above (`inventree run invoke update` +
+`inventree restart`) — automatically, no manual SSH session needed for
 routine updates.
+
+Registering the plugin is idempotent (checks for the exact line before
+appending, so re-running this on every push never creates duplicates),
+which means the same workflow works unchanged whether it's updating an
+instance that already has the plugin, or bootstrapping one that's never
+seen it before — a fresh InvenTree instance gets the line added
+automatically on its very first deploy, no manual `nano
+/etc/inventree/plugins.txt` step required first.
 
 ### Setup
 
@@ -141,16 +150,27 @@ routine updates.
      deploy:
        runs-on: ubuntu-latest
        steps:
-         - name: SSH into droplet and update InvenTree
+         - name: SSH into droplet, ensure plugin is registered, and update
            uses: appleboy/ssh-action@v1.0.3
            with:
              host: ${{ secrets.INVENTREE_HOST }}
              username: ${{ secrets.INVENTREE_SSH_USER }}
              key: ${{ secrets.INVENTREE_SSH_KEY }}
              script: |
+               PLUGIN_LINE="inventree-omg-harness-import @ git+https://github.com/SXSLYDA/inventree_omg_plugin.git"
+               PLUGINS_FILE="/etc/inventree/plugins.txt"
+               grep -qxF "$PLUGIN_LINE" "$PLUGINS_FILE" 2>/dev/null || echo "$PLUGIN_LINE" >> "$PLUGINS_FILE"
+
                inventree run invoke update
                inventree restart
    ```
+
+   The `PLUGINS_FILE` path above is specific to this project's own
+   deployment type (DigitalOcean's package/`packager.io` installer, per
+   this README's own "Installing on InvenTree" section) — a
+   Docker-based InvenTree install keeps `plugins.txt` somewhere under
+   `/opt/inventree/data/` instead, and this line would need updating to
+   match if this workflow is ever pointed at a Docker instance.
 
    On Windows, `.github` can't reliably be created through Explorer's
    "New Folder" dialog (a well-known quirk with leading-dot folder
@@ -204,7 +224,10 @@ without updating anything.
 
 Same checks as the manual "Verifying a working install" section below
 apply here unchanged — the automation doesn't change what "working"
-looks like, only who types the commands.
+looks like, only who types the commands. Additionally, `cat
+/etc/inventree/plugins.txt` should show the plugin's line present after
+the very first automated run, even on an instance that never had it
+added manually.
 
 ## Known issues and how they were solved
 
