@@ -54,19 +54,23 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
     a best-effort notification, not a required step for the import
     itself to be considered successful.
     """
-    omg_base_url = getattr(settings, "OMG_HARNESS_API_URL", None)
-    # Separate credential from the general API token used for reading
-    # FROM OMG — this one is what OMG's own reconciliation endpoint
-    # checks (via hmac.compare_digest against InvenTreeSetupSettings
-    # .inbound_webhook_token, not Django/DRF auth at all), specifically
-    # because it's a different, unauthenticated-by-default endpoint:
-    # OMG's own harness-search/BOM-export views use IsAuthenticated
-    # against the API Token above, but this endpoint is the one thing
-    # InvenTree calls INTO OMG rather than the other way around, so it
-    # needs its own secret rather than reusing that one.
-    webhook_token = getattr(settings, "OMG_INBOUND_WEBHOOK_TOKEN", None)
+    # Read from the plugin's own settings (what the settings page and the
+    # "credentials set" widget use), falling back to Django settings for
+    # deployments that configure these via environment instead. Reading
+    # django.conf.settings alone meant values entered in the plugin UI were
+    # never seen here, so every push silently bailed out as "not configured".
+    #
+    # The webhook token is a separate credential from the general API token
+    # used for reading FROM OMG — OMG's reconciliation endpoint checks it
+    # (via hmac.compare_digest against InvenTreeSetupSettings
+    # .inbound_webhook_token), not Django/DRF user auth.
+    omg_base_url, webhook_token = _get_webhook_credentials()
     if not omg_base_url or not webhook_token:
-        logger.info("OMG webhook credentials not configured — skipping reconciliation push-back.")
+        logger.warning(
+            "OMG webhook credentials not configured (API URL set: %s, webhook token set: %s) "
+            "— skipping reconciliation push-back.",
+            bool(omg_base_url), bool(webhook_token),
+        )
         return False
 
     flags = [
@@ -98,6 +102,34 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
         )
         resp.raise_for_status()
         return True
+    except requests.HTTPError as exc:
+        body = (exc.response.text or "")[:300] if exc.response is not None else ""
+        logger.warning(
+            "OMG rejected reconciliation push-back (HTTP %s): %s",
+            exc.response.status_code if exc.response is not None else "?", body,
+        )
+        return False
     except requests.RequestException as exc:
         logger.warning("Failed to push reconciliation data back to OMG: %s", exc)
         return False
+
+
+def _get_webhook_credentials():
+    """
+    Returns (base_url, webhook_token). Plugin settings take priority;
+    Django settings are the fallback. Either may be None/empty.
+    """
+    url = token = None
+    try:
+        from plugin.registry import registry
+        plugin = registry.get_plugin("omg-harness-import")
+    except Exception:  # registry unavailable (e.g. during tests/migrations)
+        plugin = None
+
+    if plugin:
+        url = plugin.get_setting("OMG_HARNESS_API_URL")
+        token = plugin.get_setting("OMG_INBOUND_WEBHOOK_TOKEN")
+
+    url = url or getattr(settings, "OMG_HARNESS_API_URL", None)
+    token = token or getattr(settings, "OMG_INBOUND_WEBHOOK_TOKEN", None)
+    return url, token
