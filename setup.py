@@ -32,7 +32,12 @@ setuptools.setup(
         # never published to PyPI, so it needs a direct URL reference
         # (PEP 508) rather than a plain name — pip resolves this from
         # git during install, no separate manual step needed.
-        "mouser-lookup @ git+https://github.com/SXSLYDA/mouser_shared.git",
+        # Pinned to a release TAG, not the bare repo URL: with the bare URL,
+        # pip treats mouser-lookup as "already installed from that URL" and
+        # never updates it. A new tag = a new URL = pip reinstalls. When
+        # mouser_shared releases (its bump-version.ps1 prints the tag),
+        # update the @vX.Y.Z here and bump this plugin's version.
+        "mouser-lookup @ git+https://github.com/SXSLYDA/mouser_shared.git@v0.1.1",
     ],
     entry_points={
         # This is the entry point group InvenTree scans for installed plugins.

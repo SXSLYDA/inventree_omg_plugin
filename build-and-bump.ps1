@@ -5,7 +5,9 @@
 #   cd "C:\Users\tyler\PycharmProjects\OMG Harness\inventree omg plugin"
 #   .\build-and-bump.ps1
 #
-# Builds all three panels (sync, SO export, import harness) and bumps
+# Builds all three panels (sync, SO export, import harness), updates
+# setup.py's mouser-lookup pin to mouser_shared's newest release tag (see
+# "Checking mouser_shared" below), and bumps
 # the plugin's version afterward (in omg_import_plugin/version.py,
 # which setup.py imports from). The version bump matters for a real
 # reason, not just bookkeeping: pip tracks installed packages by
@@ -116,6 +118,62 @@ $mergedManifest | ConvertTo-Json -Depth 10 | Set-Content -Path $manifestPath -No
 Write-Host ""
 Write-Host "Merged manifest.json now covers $($mergedManifest.Count) panel(s): $($mergedManifest.Keys -join ', ')" -ForegroundColor Cyan
 
+# Keep setup.py's mouser-lookup dependency pinned to mouser_shared's
+# NEWEST release tag. The pin (...mouser_shared.git@vX.Y.Z) is what makes
+# pip actually reinstall mouser-lookup on update - an unchanged URL can be
+# treated as "already installed" and skipped - but it only moves when the
+# tag in setup.py changes. So each run asks GitHub for mouser_shared's
+# tags (git ls-remote: lists refs only, downloads nothing) and moves the
+# pin forward to the newest vX.Y.Z. Never downgrades. If GitHub can't be
+# reached, it warns and leaves the pin alone - the build still succeeds.
+$mouserRepo = "https://github.com/SXSLYDA/mouser_shared.git"
+$setupPath = Join-Path $root "setup.py"
+$mouserPinChange = $null
+Write-Host ""
+Write-Host "=== Checking mouser_shared for a newer release ===" -ForegroundColor Cyan
+try {
+    $remoteRefs = git ls-remote --tags --refs $mouserRepo 2>$null
+    if ($LASTEXITCODE -ne 0) { throw "git ls-remote failed (offline, or no access to $mouserRepo)" }
+
+    $releases = @()
+    foreach ($line in $remoteRefs) {
+        if ($line -match 'refs/tags/v(\d+)\.(\d+)\.(\d+)$') {
+            $releases += [pscustomobject]@{
+                Tag     = "v$($matches[1]).$($matches[2]).$($matches[3])"
+                Version = [version]"$($matches[1]).$($matches[2]).$($matches[3])"
+            }
+        }
+    }
+
+    if ($releases.Count -eq 0) {
+        Write-Warning "No vX.Y.Z tags found on mouser_shared - setup.py's mouser-lookup pin left as is."
+    }
+    else {
+        $latest = ($releases | Sort-Object Version -Descending)[0]
+        $setupContent = Get-Content $setupPath -Raw
+        $pinRegex = [regex]'(mouser-lookup\s*@\s*git\+https://github\.com/SXSLYDA/mouser_shared\.git)(@v(\d+\.\d+\.\d+))?'
+        $pinMatch = $pinRegex.Match($setupContent)
+
+        if (-not $pinMatch.Success) {
+            Write-Warning "No mouser-lookup @ ...mouser_shared.git line found in setup.py - pin not checked."
+        }
+        elseif ($pinMatch.Groups[3].Success -and ([version]$pinMatch.Groups[3].Value -ge $latest.Version)) {
+            Write-Host "mouser-lookup is already pinned to the newest release ($($pinMatch.Groups[2].Value.TrimStart('@')))."
+        }
+        else {
+            $currentPin = if ($pinMatch.Groups[2].Success) { $pinMatch.Groups[2].Value.TrimStart('@') } else { "(unpinned)" }
+            $newSetup = $pinRegex.Replace($setupContent, "`${1}@$($latest.Tag)", 1)
+            # No BOM - matches how setup.py is stored, keeps the git diff clean.
+            [System.IO.File]::WriteAllText($setupPath, $newSetup, (New-Object System.Text.UTF8Encoding $false))
+            $mouserPinChange = "$currentPin -> $($latest.Tag)"
+            Write-Host "mouser-lookup pin updated in setup.py: $mouserPinChange" -ForegroundColor Green
+        }
+    }
+}
+catch {
+    Write-Warning "Couldn't check mouser_shared's releases ($_) - setup.py's mouser-lookup pin left as is."
+}
+
 # Bump the version. setup.py doesn't hold a literal version string
 # itself - it imports OMG_IMPORT_PLUGIN_VERSION from
 # omg_import_plugin/version.py, so that's the actual file to bump.
@@ -168,6 +226,9 @@ finally {
 }
 
 Write-Host ""
+if ($mouserPinChange) {
+    Write-Host "mouser-lookup pin changed this run: $mouserPinChange (setup.py is staged above)." -ForegroundColor Green
+}
 Write-Host "Done. Review the staged changes above (especially version.py's version bump), then:" -ForegroundColor Green
 Write-Host "  git commit -m `"Rebuild panels, bump version`""
 Write-Host "  git push"
