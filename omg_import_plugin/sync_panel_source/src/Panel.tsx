@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Anchor, Badge, Button, Group, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
@@ -43,6 +43,7 @@ interface PendingPartInfo {
 // to an OMG object, or OMG couldn't be reached.
 interface OmgContext {
     label: string;
+    wire_no?: number | string | null;
     part_no: string;
     description: string;
     linked_inventree_pk: number | null;
@@ -75,6 +76,36 @@ interface SupplierSearchResult {
     price: string | null;
     link: string;
     existing_part_id: number | null;
+}
+
+// Review list sections, in display order. Items not tied to an OMG object
+// (e.g. a stale BOM line, or a harness rename InvenTree refused) go last.
+const REVIEW_GROUPS: { key: string; title: string }[] = [
+    { key: 'connector', title: 'Connectors' },
+    { key: 'wire', title: 'Wires' },
+    { key: 'multicore', title: 'Multicore cables' },
+    { key: 'accessory', title: 'Accessories' },
+    { key: 'junction', title: 'Junctions' },
+    { key: 'sub_harness', title: 'Sub-harnesses' },
+    { key: 'other', title: 'Other' },
+];
+
+// "J2" before "J10", "Wire 9" before "Wire 17".
+const naturalCompare = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' }).compare;
+
+function reviewTitle(item: UnresolvedItem): string {
+    return item.omg_context?.label || item.part_number;
+}
+
+// Wires sort by their actual WireNo from OMG (numeric-aware, so "12A"
+// sits after "12"); everything else - and a wire OMG didn't return a
+// number for - sorts by its title.
+function reviewSortKey(item: UnresolvedItem): string {
+    const wireNo = item.omg_context?.wire_no;
+    if (item.omg_object_type === 'wire' && wireNo !== null && wireNo !== undefined && wireNo !== '') {
+        return String(wireNo);
+    }
+    return reviewTitle(item);
 }
 
 const PLUGIN_SLUG = 'omg-harness-import';
@@ -259,7 +290,7 @@ function ReviewItem({ item, context, onChanged }: {
     });
 
     return (
-        <Alert color={pending ? 'blue' : 'yellow'} title={omg?.label || item.part_number}>
+        <Alert color={pending ? 'blue' : 'yellow'} title={reviewTitle(item)}>
             <Stack gap={6}>
                 <Text size="sm">{item.notes}</Text>
 
@@ -447,6 +478,18 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [error, setError] = useState<string | null>(null);
     const [queue, setQueue] = useState<UnresolvedItem[]>([]);
     const [queueContextError, setQueueContextError] = useState<string | null>(null);
+
+    const groupedQueue = useMemo(() => {
+        const known = new Set(REVIEW_GROUPS.map((g) => g.key));
+        return REVIEW_GROUPS
+            .map((group) => ({
+                ...group,
+                items: queue
+                    .filter((item) => (known.has(item.omg_object_type || '') ? item.omg_object_type : 'other') === group.key)
+                    .sort((a, b) => naturalCompare(reviewSortKey(a), reviewSortKey(b))),
+            }))
+            .filter((group) => group.items.length > 0);
+    }, [queue]);
 
     // Link flow (only used while !isLinked)
     // Pre-filled with the part's own name — that's the overwhelmingly
@@ -747,10 +790,18 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                 <>
                     <Title order={5} mt="md">Needs review</Title>
                     {queueContextError && <Alert color="orange">{queueContextError}</Alert>}
-                    <Stack gap="xs">
-                        {queue.map((item) => (
-                            <ReviewItem key={item.id} item={item} context={context}
-                                        onChanged={async () => { await loadQueue(); await loadStatus(); }} />
+                    <Stack gap="md">
+                        {groupedQueue.map((group) => (
+                            <Stack key={group.key} gap="xs">
+                                <Group gap="xs">
+                                    <Title order={6}>{group.title}</Title>
+                                    <Badge size="sm" variant="light" color="yellow">{group.items.length}</Badge>
+                                </Group>
+                                {group.items.map((item) => (
+                                    <ReviewItem key={item.id} item={item} context={context}
+                                                onChanged={async () => { await loadQueue(); await loadStatus(); }} />
+                                ))}
+                            </Stack>
                         ))}
                     </Stack>
                 </>

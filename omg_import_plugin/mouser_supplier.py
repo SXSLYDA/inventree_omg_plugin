@@ -17,6 +17,7 @@ Uses the same mouser_lookup package as everything else in this project —
 no separate Mouser API client, no duplicated parsing logic.
 """
 
+import io
 import logging
 
 from django.db.models import Q
@@ -30,6 +31,50 @@ from mouser_lookup import search_by_mpn
 
 logger = logging.getLogger(__name__)
 
+# InvenTree's own SupplierMixin.download_image() calls
+# download_image_from_url() with its defaults: NO User-Agent (so the
+# request goes out as "python-requests/x"), a 2.5 s timeout and a 1 MB
+# limit - and InvenTree has no setting to change them. Mouser's image
+# server sits behind bot protection that commonly refuses non-browser
+# clients, and a 2.5 s timeout is tight from a small droplet. These are
+# what this plugin uses instead (download_image() override below).
+IMAGE_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+)
+IMAGE_TIMEOUT_SECONDS = 10
+IMAGE_MAX_BYTES = 5 * 1024 * 1024
+
+
+def _usable_image_url(value):
+    """
+    The image URL, or '' if there isn't a real one. mouser_lookup's
+    _clean_str(None) returns the literal string "None" for parts with no
+    image, which used to be treated as a URL and fail every time.
+    """
+    url = (value or "").strip()
+    if url.lower() in ("", "none", "null"):
+        return ""
+    if url.startswith("//"):
+        url = "https:" + url
+    return url if url.lower().startswith(("http://", "https://")) else ""
+
+
+def _log_image_error(part, url):
+    """
+    Record a failed image download in InvenTree's Settings -> System ->
+    Error Logs (with the reason), not just the server log - logger.warning
+    alone never showed up there, so failures were invisible.
+    Call from inside an except block.
+    """
+    logger.warning("Failed to download/save Mouser image for part %s from %s", part.pk, url, exc_info=True)
+    try:
+        from InvenTree.exceptions import log_error
+        log_error(path=f"omg-harness-import: Mouser image for part {part.pk} ({part.name}) from {url}",
+                  plugin="omg-harness-import")
+    except Exception:  # older InvenTree without log_error(plugin=...) - server log above still has it
+        pass
+
 
 class MouserSupplierMixin(SupplierMixin):
     """
@@ -38,6 +83,28 @@ class MouserSupplierMixin(SupplierMixin):
     SupplierMixin contract exactly — see
     https://docs.inventree.org/en/stable/plugins/mixins/supplier/
     """
+
+    def download_image(self, img_url):
+        """
+        Same as InvenTree's SupplierMixin.download_image() - still uses
+        InvenTree's download_image_from_url(), so its SSRF protection,
+        redirect checks and image validation all still apply - but with a
+        browser User-Agent, a longer timeout and a larger size limit (see
+        IMAGE_* above for why). Returns (ContentFile, format).
+        """
+        from django.core.files.base import ContentFile
+        from InvenTree.helpers_model import download_image_from_url
+
+        img = download_image_from_url(
+            img_url,
+            timeout=IMAGE_TIMEOUT_SECONDS,
+            user_agent=IMAGE_USER_AGENT,
+            max_size=IMAGE_MAX_BYTES,
+        )
+        fmt = img.format or "PNG"
+        buffer = io.BytesIO()
+        img.save(buffer, format=fmt)
+        return ContentFile(buffer.getvalue()), fmt
 
     def get_suppliers(self):
         return [supplier.Supplier(slug="mouser", name="Mouser Electronics")]
@@ -145,23 +212,19 @@ class MouserSupplierMixin(SupplierMixin):
         # part is missing an image, regardless of whether the Part
         # record itself was just created this call or already existed
         # from an earlier import/pending-part resolution.
-        if not part.image and data.get("image") and self.get_setting("OMG_DOWNLOAD_MOUSER_IMAGES", False):
+        image_url = _usable_image_url(data.get("image"))
+        if not part.image and image_url and self.get_setting("OMG_DOWNLOAD_MOUSER_IMAGES", False):
             try:
-                file, fmt = self.download_image(data["image"])
+                file, fmt = self.download_image(image_url)
                 part.image.save(f"part_{part.pk}_image.{fmt.lower()}", file)
-            except Exception as exc:
-                # Was a bare `except Exception: pass` - genuinely
-                # necessary that a failed image download never blocks
-                # the part import itself, but that silently swallowed
-                # the actual reason too, with no way to tell afterward
-                # whether it was a bad/expired image URL, a format PIL
-                # couldn't handle, or a storage/permissions issue on
-                # this server. Logging it (not raising) keeps the same
-                # non-blocking behavior while making a future failure
-                # actually diagnosable via Settings -> System -> Error
-                # Logs, instead of a part just quietly ending up with
-                # no image and no trace of why.
-                logger.warning("Failed to download/save Mouser image for part %s: %s", part.pk, exc)
+            except Exception:
+                # A failed image must never block the part import itself,
+                # but the reason has to be findable: logger.warning alone
+                # only reached the server log, never InvenTree's Error Logs
+                # page, so failures looked like "no image, no trace".
+                # _log_image_error records it in Settings -> System ->
+                # Error Logs (reason + URL) as well as the server log.
+                _log_image_error(part, image_url)
 
         return part
 
