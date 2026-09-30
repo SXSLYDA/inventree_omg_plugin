@@ -32,9 +32,9 @@ from mouser_lookup import search_by_mpn
 logger = logging.getLogger(__name__)
 
 # InvenTree's own SupplierMixin.download_image() calls
-# download_image_from_url() with its defaults: NO User-Agent (so the
-# request goes out as "python-requests/x"), a 2.5 s timeout and a 1 MB
-# limit - and InvenTree has no setting to change them. Mouser's image
+# download_image_from_url() with its defaults: no User-Agent unless the
+# INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT setting is filled in (blank by
+# default, so requests go out as "python-requests/x") and a 2.5 s timeout. Mouser's image
 # server sits behind bot protection that commonly refuses non-browser
 # clients, and a 2.5 s timeout is tight from a small droplet. These are
 # what this plugin uses instead (download_image() override below).
@@ -58,6 +58,89 @@ def _usable_image_url(value):
     if url.startswith("//"):
         url = "https:" + url
     return url if url.lower().startswith(("http://", "https://")) else ""
+
+
+def _global_setting(key):
+    """An InvenTree global setting's value, or '' if it can't be read."""
+    try:
+        from common.settings import get_global_setting
+    except ImportError:  # older InvenTree layout
+        try:
+            from common.models import InvenTreeSetting
+            return InvenTreeSetting.get_setting(key, "") or ""
+        except Exception:
+            return ""
+    try:
+        return get_global_setting(key, "") or ""
+    except Exception:
+        return ""
+
+
+def _is_public_host(hostname):
+    """True only if every address the host resolves to is a public one."""
+    import ipaddress
+    import socket
+    try:
+        infos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror:
+        return False
+    for info in infos:
+        addr = ipaddress.ip_address(info[4][0].split("%")[0])
+        if (addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast
+                or addr.is_reserved or addr.is_unspecified):
+            return False
+    return bool(infos)
+
+
+def _fetch_image(url):
+    """
+    Download an image with a browser User-Agent - used when InvenTree's own
+    downloader can't send one (see MouserSupplierMixin.download_image).
+    Same kinds of checks InvenTree applies: http(s) only, public hosts
+    only (checked again after every redirect - no reaching internal
+    addresses), a size cap, and the bytes must be a real image. Returns a
+    PIL Image; raises on anything wrong (the caller logs it).
+    """
+    from urllib.parse import urljoin, urlparse
+
+    import requests
+    from PIL import Image
+
+    headers = {"User-Agent": IMAGE_USER_AGENT, "Accept": "image/*"}
+    for _hop in range(5):
+        parsed = urlparse(url)
+        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+            raise ValueError(f"Not a web address: {url}")
+        if not _is_public_host(parsed.hostname):
+            raise ValueError(f"Refusing to download from a non-public address: {parsed.hostname}")
+        response = requests.get(url, headers=headers, timeout=IMAGE_TIMEOUT_SECONDS,
+                                stream=True, allow_redirects=False)
+        if response.is_redirect or response.is_permanent_redirect:
+            url = urljoin(url, response.headers.get("Location", ""))
+            response.close()
+            continue
+        break
+    else:
+        raise ValueError("Too many redirects")
+
+    if response.status_code != 200:
+        raise ValueError(f"Server responded with status {response.status_code}")
+    content_type = response.headers.get("Content-Type", "")
+    if content_type and not content_type.lower().startswith("image/"):
+        raise ValueError(f"Not an image (Content-Type: {content_type})")
+    if int(response.headers.get("Content-Length") or 0) > IMAGE_MAX_BYTES:
+        raise ValueError("Image is larger than the size limit")
+
+    data = bytearray()
+    for chunk in response.iter_content(chunk_size=65536):
+        data.extend(chunk)
+        if len(data) > IMAGE_MAX_BYTES:
+            raise ValueError("Image is larger than the size limit")
+
+    Image.open(io.BytesIO(data)).verify()  # rejects corrupt / non-image data
+    img = Image.open(io.BytesIO(data))
+    img.load()
+    return img
 
 
 def _log_image_error(part, url):
@@ -86,21 +169,37 @@ class MouserSupplierMixin(SupplierMixin):
 
     def download_image(self, img_url):
         """
-        Same as InvenTree's SupplierMixin.download_image() - still uses
-        InvenTree's download_image_from_url(), so its SSRF protection,
-        redirect checks and image validation all still apply - but with a
-        browser User-Agent, a longer timeout and a larger size limit (see
-        IMAGE_* above for why). Returns (ContentFile, format).
+        Download a Mouser image with a browser User-Agent. Returns
+        (ContentFile, format), same as SupplierMixin.download_image().
+
+        InvenTree's download_image_from_url() differs by version:
+          - Unreleased/newer InvenTree accepts user_agent/max_size
+            arguments - passed directly.
+          - Released InvenTree (<= 1.0.x) takes only (url, timeout) and
+            reads the User-Agent from the global setting
+            INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT (Settings -> System),
+            which is blank by default = no browser User-Agent. If that
+            setting is filled in, InvenTree's downloader is used (your
+            setting wins); if it's blank, _fetch_image() downloads with a
+            browser User-Agent and the same kinds of safety checks.
+        (Passing user_agent to the released version raised "unexpected
+        keyword argument 'user_agent'" - this checks first.)
         """
+        import inspect
         from django.core.files.base import ContentFile
         from InvenTree.helpers_model import download_image_from_url
 
-        img = download_image_from_url(
-            img_url,
-            timeout=IMAGE_TIMEOUT_SECONDS,
-            user_agent=IMAGE_USER_AGENT,
-            max_size=IMAGE_MAX_BYTES,
-        )
+        params = inspect.signature(download_image_from_url).parameters
+        if "user_agent" in params:
+            kwargs = {"timeout": IMAGE_TIMEOUT_SECONDS, "user_agent": IMAGE_USER_AGENT}
+            if "max_size" in params:
+                kwargs["max_size"] = IMAGE_MAX_BYTES
+            img = download_image_from_url(img_url, **kwargs)
+        elif _global_setting("INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT"):
+            img = download_image_from_url(img_url, timeout=IMAGE_TIMEOUT_SECONDS)
+        else:
+            img = _fetch_image(img_url)
+
         fmt = img.format or "PNG"
         buffer = io.BytesIO()
         img.save(buffer, format=fmt)
