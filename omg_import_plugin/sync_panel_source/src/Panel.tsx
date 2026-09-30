@@ -238,7 +238,10 @@ function ReviewItem({ item, context, onChanged }: {
             active: {},
         },
         initialData: {
-            name: omg?.part_no || pending?.mpn || item.part_number,
+            // The part number typed in OMG (ConnectorPartNo, ConductorPartNo,
+            // accessory/junction PartNo), else the pending Mouser MPN. Never
+            // the review item's title - that's a label like "J1", not a part number.
+            name: omg?.part_no || pending?.mpn || '',
             description: omg?.description || pending?.description || '',
             link: pending?.url || '',
             component: true,
@@ -256,7 +259,7 @@ function ReviewItem({ item, context, onChanged }: {
     });
 
     return (
-        <Alert color={pending ? 'blue' : 'yellow'} title={omg?.label ? `${omg.label} — ${item.part_number}` : item.part_number}>
+        <Alert color={pending ? 'blue' : 'yellow'} title={omg?.label || item.part_number}>
             <Stack gap={6}>
                 <Text size="sm">{item.notes}</Text>
 

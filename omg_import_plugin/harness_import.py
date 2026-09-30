@@ -199,7 +199,7 @@ def _get_contact_count_param(part, param_name):
 
 def _flag_connector(batch, connector_id, label, message, candidate_pks=None):
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG connector #{connector_id} ({label})", quantity=1,
+        batch=batch, part_number=label or "Connector", quantity=1,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.CONNECTOR, omg_object_id=connector_id,
@@ -210,16 +210,12 @@ def _flag_wire(batch, wire_id, message, candidate_pks=None, wire_no=None):
     """
     wire_no vs wire_id: wire_id is OMG's own database pk for this wire
     (used below as omg_object_id, which reconciliation.py needs to
-    identify the exact record) - it was ALSO being shown to the user
-    in part_number as "OMG wire #<pk>", which is a meaningless internal
-    id, not the actual wire number a person would recognize from their
-    own harness design. wire_no (OMG's own human-readable wire number
-    field, WireNo in the OMG app's own model) is what should display
-    instead - falls back to wire_id only if a caller doesn't have it,
-    so this never regresses to showing nothing.
+    identify the exact record) - never shown to people. wire_no (OMG's
+    WireNo, now sent in the BOM payload and pin specs) is what's
+    displayed; if it's missing, just "Wire" - never the pk.
     """
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG wire #{wire_no if wire_no is not None else wire_id}", quantity=1,
+        batch=batch, part_number=f"Wire {wire_no}" if wire_no not in (None, "") else "Wire", quantity=1,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.WIRE, omg_object_id=wire_id,
@@ -228,7 +224,7 @@ def _flag_wire(batch, wire_id, message, candidate_pks=None, wire_no=None):
 
 def _flag_multicore(batch, multicore_id, name, message):
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG multicore cable #{multicore_id} ({name})", quantity=1,
+        batch=batch, part_number=name or "Multicore cable", quantity=1,
         reason=UnresolvedImportItem.Reason.NOT_FOUND, notes=message,
         omg_object_type=UnresolvedImportItem.OmgObjectType.MULTICORE, omg_object_id=multicore_id,
     )
@@ -236,7 +232,7 @@ def _flag_multicore(batch, multicore_id, name, message):
 
 def _flag_accessory(batch, accessory_id, kind, message, candidate_pks=None):
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG connector accessory #{accessory_id} ({kind})", quantity=1,
+        batch=batch, part_number=kind or "Accessory", quantity=1,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.ACCESSORY, omg_object_id=accessory_id,
@@ -245,7 +241,7 @@ def _flag_accessory(batch, accessory_id, kind, message, candidate_pks=None):
 
 def _flag_junction(batch, junction_id, name, message, candidate_pks=None):
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=f"OMG connector junction #{junction_id} ({name})", quantity=1,
+        batch=batch, part_number=name or "Junction", quantity=1,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.JUNCTION, omg_object_id=junction_id,
@@ -791,7 +787,36 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
     batch.matched_items = len(seen_sub_part_pks)
     batch.flagged_items = batch.items.count()
     batch.save()
+
+    _close_superseded_review_items(harness_part, batch)
     return batch, resolved_matches
+
+
+def _close_superseded_review_items(harness_part, current_batch):
+    """
+    Close review items still open from EARLIER syncs of this harness.
+    Every sync re-flags whatever is still wrong in its own new batch, so
+    the older batches' open items are duplicates of those (or already
+    fixed). Nothing used to close them, so the per-harness review queue
+    grew with every sync - duplicate entries, and eventually more than
+    OMG's review-details endpoint accepts in one request.
+
+    Marked DISMISSED with a note rather than deleted, so the history of
+    what each sync found is kept. Items a person already resolved are
+    untouched.
+    """
+    from django.db.models import Value
+    from django.db.models.functions import Concat
+    from django.utils import timezone
+
+    UnresolvedImportItem.objects.filter(
+        batch__root_part=harness_part,
+        resolution=UnresolvedImportItem.Resolution.UNRESOLVED,
+    ).exclude(batch=current_batch).update(
+        resolution=UnresolvedImportItem.Resolution.DISMISSED,
+        resolved_at=timezone.now(),
+        notes=Concat("notes", Value(f" [Superseded by sync batch #{current_batch.pk}.]")),
+    )
 
 
 def _upsert_bom_line(harness_part, sub_part, quantity):
