@@ -42,17 +42,28 @@ logger = logging.getLogger(__name__)
 
 
 def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matches=None):
+    """Boolean wrapper around push_reconciliation_to_omg_detailed() - see there."""
+    ok, _data, _error = push_reconciliation_to_omg_detailed(
+        batch, resolved_pending_parts=resolved_pending_parts, resolved_matches=resolved_matches,
+    )
+    return ok
+
+
+def push_reconciliation_to_omg_detailed(batch, resolved_pending_parts=None, resolved_matches=None):
     """
     batch: an ImportBatch (from harness_import.import_or_update_harness_bom,
            resolve_pending.resolve_pending_parts, or the batch a
            human-resolved UnresolvedImportItem belongs to).
-    resolved_pending_parts: optional list of {"pending_part_id", "inventree_pk"}.
+    resolved_pending_parts: optional list of {"pending_part_id", "inventree_pk"[, "mpn"]}
+           - with "mpn", OMG only resolves the pending part if it's still
+           for that MPN (see OMG's _pending_part_rejection).
     resolved_matches: optional list of {"omg_object_type", "omg_object_id",
            "inventree_pk"} — see module docstring point 2.
 
-    Returns True on success, False on failure (never raises) — this is
-    a best-effort notification, not a required step for the import
-    itself to be considered successful.
+    Returns (ok, response_json_or_None, error_message_or_None) and never
+    raises. For most callers this is a best-effort notification; the
+    review queue's pending-part flow uses the response's
+    "rejected_pending_parts" to refuse a link OMG didn't accept.
     """
     # Read from the plugin's own settings (what the settings page and the
     # "credentials set" widget use), falling back to Django settings for
@@ -71,7 +82,7 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
             "— skipping reconciliation push-back.",
             bool(omg_base_url), bool(webhook_token),
         )
-        return False
+        return False, None, "OMG webhook credentials aren't configured in the plugin settings."
 
     flags = [
         {
@@ -91,7 +102,7 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
     }
 
     if not any([payload["resolved_pending_parts"], payload["resolved_matches"], payload["flags"]]):
-        return True  # nothing to report — don't bother with the round trip
+        return True, None, None  # nothing to report — don't bother with the round trip
 
     try:
         resp = requests.post(
@@ -101,17 +112,21 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
             timeout=15,
         )
         resp.raise_for_status()
-        return True
+        try:
+            data = resp.json()
+        except ValueError:
+            data = None
+        return True, data, None
     except requests.HTTPError as exc:
         body = (exc.response.text or "")[:300] if exc.response is not None else ""
         logger.warning(
             "OMG rejected reconciliation push-back (HTTP %s): %s",
             exc.response.status_code if exc.response is not None else "?", body,
         )
-        return False
+        return False, None, f"OMG rejected the update (HTTP {exc.response.status_code if exc.response is not None else '?'}): {body}"
     except requests.RequestException as exc:
         logger.warning("Failed to push reconciliation data back to OMG: %s", exc)
-        return False
+        return False, None, f"Couldn't reach OMG: {exc}"
 
 
 def _get_webhook_credentials():

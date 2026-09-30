@@ -9,7 +9,7 @@ from rest_framework.views import APIView
 from .harness_import import import_or_update_harness_bom
 from .models import ImportBatch, UnresolvedImportItem
 from .omg_credentials import get_omg_credentials
-from .reconciliation import push_reconciliation_to_omg
+from .reconciliation import push_reconciliation_to_omg, push_reconciliation_to_omg_detailed
 from .resolve_pending import resolve_pending_parts
 from .resolver import import_harness_bom, resolve_item
 
@@ -92,6 +92,45 @@ class ImportView(APIView):
         return Response(ImportBatchSerializer(batch).data, status=status.HTTP_201_CREATED)
 
 
+REVIEW_CONTEXT_TYPES = {"connector", "wire", "multicore", "accessory", "junction"}
+
+
+def _fetch_review_context(user, items):
+    """
+    Live OMG details for review items that trace back to an OMG object -
+    typed part number, description, label and any Mouser pending part
+    (MPN, manufacturer, link). One call to OMG's /api/inventree/review-context/.
+
+    Returns ({(omg_object_type, omg_object_id): context}, error_or_None).
+    Never raises: if OMG can't be reached the queue still shows, just
+    without the extra details.
+    """
+    wanted = [
+        {"omg_object_type": i.omg_object_type, "omg_object_id": i.omg_object_id}
+        for i in items if i.omg_object_type in REVIEW_CONTEXT_TYPES and i.omg_object_id
+    ]
+    if not wanted:
+        return {}, None
+
+    from plugin.registry import registry
+    plugin = registry.get_plugin("omg-harness-import")
+    omg_base_url, omg_token = get_omg_credentials(user, plugin=plugin)
+    if not omg_base_url or not omg_token:
+        return {}, "OMG credentials aren't configured, so OMG details can't be shown."
+    try:
+        resp = requests.post(
+            f"{omg_base_url.rstrip('/')}/api/inventree/review-context/",
+            json={"items": wanted},
+            headers={"Authorization": f"Token {omg_token}"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        rows = resp.json().get("items", [])
+    except (requests.RequestException, ValueError) as exc:
+        return {}, f"Couldn't load details from OMG: {exc}"
+    return {(r["omg_object_type"], r["omg_object_id"]): r for r in rows if r.get("found")}, None
+
+
 class UnresolvedQueueView(APIView):
     """
     GET /plugin/omg-harness-import/unresolved/ — items awaiting human review.
@@ -111,14 +150,31 @@ class UnresolvedQueueView(APIView):
         if part_pk:
             qs = qs.filter(batch__root_part_id=part_pk)
 
-        return Response(UnresolvedItemSerializer(qs, many=True).data)
+        items = list(qs)
+        data = UnresolvedItemSerializer(items, many=True).data
+        # Per-harness queue (the sync panel): attach OMG's live details to
+        # each item so it can be searched/imported without leaving the panel.
+        if part_pk:
+            contexts, error = _fetch_review_context(request.user, items)
+            for row, item in zip(data, items):
+                row["omg_context"] = contexts.get((item.omg_object_type, item.omg_object_id))
+            return Response({"items": data, "omg_context_error": error})
+        return Response(data)
 
 
 class ResolveItemView(APIView):
     """
     POST /plugin/omg-harness-import/unresolved/<id>/resolve/
     body: {"action": "link"|"created"|"dismiss",
-           "part_pk": 123, "notes": "..."}
+           "part_pk": 123, "notes": "...",
+           "pending_part_id": 45, "pending_mpn": "DT04-12PA"}   <- optional
+
+    With pending_part_id (the item is waiting on an OMG Mouser pending
+    part): OMG is told first, and checks the pending part still exists,
+    is still used, isn't resolved to another part, and is still for
+    pending_mpn. Only if OMG accepts is the item resolved here (and the
+    BOM line added) - if OMG refuses, nothing is resolved and the reason
+    comes back as a 409, so a stale review item can't overwrite OMG.
 
     After resolving, if the item traces back to a specific OMG
     connector/wire (omg_object_type/omg_object_id set), the resolution
@@ -133,6 +189,33 @@ class ResolveItemView(APIView):
         action = request.data.get("action")
         part_pk = request.data.get("part_pk")
         notes = request.data.get("notes", "")
+        pending_part_id = request.data.get("pending_part_id")
+
+        if pending_part_id and action in ("link", "created") and part_pk:
+            ok, omg_data, error = push_reconciliation_to_omg_detailed(
+                item.batch,
+                resolved_pending_parts=[{
+                    "pending_part_id": int(pending_part_id),
+                    "inventree_pk": int(part_pk),
+                    "mpn": request.data.get("pending_mpn") or "",
+                }],
+            )
+            if not ok:
+                return Response({"detail": error or "Couldn't update OMG.", "part_pk": part_pk},
+                                status=status.HTTP_502_BAD_GATEWAY)
+            rejected = [r for r in (omg_data or {}).get("rejected_pending_parts", [])
+                        if r.get("pending_part_id") == int(pending_part_id)]
+            if rejected:
+                return Response({"detail": f"OMG didn't accept this link: {rejected[0].get('reason')}",
+                                 "part_pk": part_pk}, status=status.HTTP_409_CONFLICT)
+            try:
+                resolve_item(item, action=action, part_pk=part_pk, notes=notes)
+            except ValueError as exc:
+                return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+            data = UnresolvedItemSerializer(item).data
+            data["reconciliation_pushed"] = True
+            return Response(data)
+
         try:
             resolve_item(item, action=action, part_pk=part_pk, notes=notes)
         except ValueError as exc:
@@ -372,9 +455,14 @@ class HarnessImportView(APIView):
             )
 
         try:
+            # inventree_pk lets OMG find the harness through its link to
+            # this InvenTree part even after the harness was renamed in OMG
+            # (harness_part_number here is this InvenTree part's current,
+            # possibly old, name). Ignored by older OMG versions.
             resp = requests.get(
                 f"{omg_base_url.rstrip('/')}/api/harness/{harness_part_number}/inventree-bom/",
                 headers={"Authorization": f"Token {omg_token}"},
+                params={"inventree_pk": target_part_pk} if target_part_pk else None,
                 timeout=15,
             )
             resp.raise_for_status()

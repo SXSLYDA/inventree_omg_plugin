@@ -143,6 +143,52 @@ SUB_HARNESS_NOT_IMPORTED_MESSAGE = (
 )
 
 
+def _sync_harness_identity(batch, harness_part, harness_part_number, harness_description):
+    """
+    Keep the InvenTree harness part's name and description in step with
+    OMG on EVERY sync, not only when the part is first created. OMG's
+    PartNumber is the authoritative harness identifier (see OMG's
+    reconciliation view: "InvenTree's Part name/IPN gets set to match
+    it, never the other way"), so this runs OMG -> InvenTree - the
+    opposite direction to connector/wire names, which follow InvenTree.
+
+    Description is only updated when OMG actually has one (a blank OMG
+    description never wipes InvenTree's). If the rename is refused - most
+    likely another InvenTree part already has that name - nothing is
+    changed and it's flagged on this batch instead of failing the sync.
+    """
+    from django.core.exceptions import ValidationError
+    from django.db import IntegrityError, transaction
+
+    updates = {}
+    new_name = (harness_part_number or "").strip()
+    if new_name and harness_part.name != new_name:
+        updates["name"] = new_name
+    new_description = (harness_description or "").strip()
+    if new_description and (harness_part.description or "") != new_description:
+        updates["description"] = new_description
+    if not updates:
+        return
+
+    original = {field: getattr(harness_part, field) for field in updates}
+    try:
+        with transaction.atomic():  # savepoint - a refused rename can't break the rest of the sync
+            for field, value in updates.items():
+                setattr(harness_part, field, value)
+            harness_part.save()
+    except (ValidationError, IntegrityError) as exc:
+        for field, value in original.items():
+            setattr(harness_part, field, value)
+        UnresolvedImportItem.objects.create(
+            batch=batch, part_number=new_name or harness_part.name, quantity=0,
+            reason=UnresolvedImportItem.Reason.NOT_FOUND,
+            notes=(f"Couldn't update this harness part to match OMG "
+                   f"({', '.join(f'{k}: {original[k]!r} -> {updates[k]!r}' for k in updates)}): {exc}. "
+                   f"Most likely another InvenTree part already uses that name - rename or merge it, "
+                   f"then re-run the sync."),
+        )
+
+
 def _get_contact_count_param(part, param_name):
     raw = native.get_part_parameter_str(part, param_name)
     try:
@@ -364,11 +410,20 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
     """
     contact_count_param = contact_count_param or DEFAULT_CONTACT_COUNT_PARAM
 
+    created = False
+    linked_pk = omg_bom_data.get("harness_inventree_pk")
     if target_part_pk:
         try:
             harness_part = Part.objects.get(pk=target_part_pk)
         except Part.DoesNotExist:
             raise ValueError(f"No InvenTree part found with pk {target_part_pk}.")
+    elif linked_pk and Part.objects.filter(pk=linked_pk).exists():
+        # OMG already has this harness linked to an InvenTree part
+        # (HarnessInventreeLink, sent as harness_inventree_pk) - use THAT
+        # part, the same way connectors/wires use their inventree_pk.
+        # Looking it up by name alone meant renaming the harness in OMG
+        # made the next sync miss the existing part and create a second.
+        harness_part = Part.objects.get(pk=linked_pk)
     else:
         # name is checked first — a real screenshot of this project's
         # actual InvenTree "Edit Part" form confirmed IPN is genuinely
@@ -387,10 +442,21 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
                 category_id=category_pk,
                 active=True, virtual=False, assembly=True,
             )
+            created = True
 
     _mark_as_omg_harness(harness_part, marker_param=harness_marker_param)
 
     batch = ImportBatch.objects.create(root_part_number=harness_part_number, root_part=harness_part)
+
+    if not created:
+        # OMG's own current part number from the payload, not the
+        # harness_part_number argument - from the sync panel that's the
+        # InvenTree part's existing (possibly old) name.
+        _sync_harness_identity(
+            batch, harness_part,
+            omg_bom_data.get("harness_part_number") or harness_part_number,
+            omg_bom_data.get("harness_description"),
+        )
     seen_sub_part_pks = set()
     resolved_matches = []
 

@@ -1,8 +1,16 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Group, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Group, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
-import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
+import { ApiEndpoints, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
+
+// A sync is one long server-side request: InvenTree fetches the BOM from
+// OMG, matches/updates every BOM line, then reports back to OMG's
+// webhook. That regularly takes longer than the 5s default timeout on
+// InvenTree's API client ("timeout of 5000ms exceeded"), so the panel
+// reported a failure even when the sync finished fine. Only the
+// import/sync calls get the longer timeout; everything else keeps the default.
+const SYNC_TIMEOUT_MS = 120000;
 
 interface BatchSummary {
     id: number;
@@ -19,12 +27,387 @@ interface Candidate {
     name: string;
 }
 
+interface PendingPartInfo {
+    id: number;
+    mpn: string;
+    kind: string;
+    manufacturer: string;
+    description: string;
+    url: string;
+    spn: string;
+    resolved_inventree_pk: number | null;
+}
+
+// Live details from OMG (POST /api/inventree/review-context/), attached
+// by the plugin's queue endpoint - null when the item doesn't trace back
+// to an OMG object, or OMG couldn't be reached.
+interface OmgContext {
+    label: string;
+    part_no: string;
+    description: string;
+    linked_inventree_pk: number | null;
+    pending_part: PendingPartInfo | null;
+}
+
 interface UnresolvedItem {
     id: number;
     part_number: string;
     reason: string;
     notes: string;
     candidates: Candidate[];
+    omg_object_type: string | null;
+    omg_object_id: number | null;
+    omg_context?: OmgContext | null;
+}
+
+interface InvenTreePartRow {
+    pk: number;
+    name: string;
+    IPN: string;
+    description: string;
+}
+
+interface SupplierSearchResult {
+    id: string;
+    sku: string;
+    name: string;
+    description: string;
+    price: string | null;
+    link: string;
+    existing_part_id: number | null;
+}
+
+const PLUGIN_SLUG = 'omg-harness-import';
+const SUPPLIER_SLUG = 'mouser';
+
+/**
+ * One item in the "Needs review" list. Besides the existing candidate
+ * picks and Dismiss, it can:
+ *   - Search InvenTree and link an existing part.
+ *   - Import the part from Mouser through InvenTree's own supplier import
+ *     (the same /api/supplier/import/ endpoint - and so the same
+ *     MouserSupplierMixin code - as Parts -> Add Parts -> Import from
+ *     Supplier). If OMG has a Mouser pending part for this item, its MPN
+ *     is already selected: pick a category and import.
+ *   - Create a part by hand with InvenTree's own "Add Part" form (for
+ *     parts that aren't on Mouser), pre-filled from OMG's part number,
+ *     description and - if there's a pending part - its Mouser link.
+ * Resolving reports back to OMG. For a pending part, OMG first checks it's
+ * still the same pending part (exists, still used, not resolved elsewhere,
+ * same MPN) and refuses otherwise - the item then stays in the queue.
+ */
+function ReviewItem({ item, context, onChanged }: {
+    item: UnresolvedItem;
+    context: InvenTreePluginContext;
+    onChanged: () => Promise<void>;
+}) {
+    const omg = item.omg_context || null;
+    const pending = omg?.pending_part || null;
+    const defaultTerm = pending?.mpn || omg?.part_no || '';
+
+    const [mode, setMode] = useState<'none' | 'search' | 'import'>('none');
+    const [busy, setBusy] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [createdPartPk, setCreatedPartPk] = useState<number | null>(null);
+
+    // Search InvenTree
+    const [term, setTerm] = useState(defaultTerm);
+    const [partResults, setPartResults] = useState<InvenTreePartRow[] | null>(null);
+
+    // Import from Mouser
+    const [supplierTerm, setSupplierTerm] = useState(defaultTerm);
+    const [supplierResults, setSupplierResults] = useState<SupplierSearchResult[] | null>(null);
+    const [selectedSku, setSelectedSku] = useState<string | null>(pending?.mpn || null);
+    const [categorySearch, setCategorySearch] = useState('');
+    const [categoryOptions, setCategoryOptions] = useState<{ value: string; label: string }[]>([]);
+    const [categoryPk, setCategoryPk] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (categorySearch.trim().length < 2) return;
+        const timer = setTimeout(async () => {
+            try {
+                const response = await context.api.get('/api/part/category/', {
+                    params: { search: categorySearch.trim(), limit: 20 },
+                });
+                const rows = response.data?.results ?? response.data ?? [];
+                setCategoryOptions(rows.map((c: any) => ({ value: String(c.pk), label: c.pathstring || c.name })));
+            } catch {
+                setCategoryOptions([]);
+            }
+        }, 400);
+        return () => clearTimeout(timer);
+    }, [categorySearch, context.api]);
+
+    const resolve = useCallback(async (action: 'link' | 'created' | 'dismiss', partPk?: number) => {
+        setBusy(true);
+        setError(null);
+        try {
+            await context.api.post(`/plugin/${PLUGIN_SLUG}/unresolved/${item.id}/resolve/`, {
+                action,
+                part_pk: partPk,
+                ...(pending && action !== 'dismiss' ? { pending_part_id: pending.id, pending_mpn: pending.mpn } : {}),
+            }, { timeout: SYNC_TIMEOUT_MS });
+            notifications.show({
+                title: action === 'dismiss' ? 'Dismissed' : 'Linked',
+                message: action === 'dismiss' ? 'Item dismissed.' : 'Linked in InvenTree and reported to OMG.',
+                color: 'green',
+            });
+            await onChanged();
+        } catch (err: any) {
+            const detail = err?.response?.data?.detail || err.message;
+            setError(detail);
+        } finally {
+            setBusy(false);
+        }
+    }, [context.api, item.id, pending, onChanged]);
+
+    const searchInvenTree = useCallback(async () => {
+        if (!term.trim()) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const response = await context.api.get('/api/part/', { params: { search: term.trim(), limit: 10 } });
+            setPartResults(response.data?.results ?? response.data ?? []);
+        } catch (err: any) {
+            setError(err?.response?.data?.detail || err.message);
+        } finally {
+            setBusy(false);
+        }
+    }, [context.api, term]);
+
+    const searchMouser = useCallback(async () => {
+        if (!supplierTerm.trim()) return;
+        setBusy(true);
+        setError(null);
+        try {
+            const response = await context.api.get('/api/supplier/search/', {
+                params: { plugin: PLUGIN_SLUG, supplier: SUPPLIER_SLUG, term: supplierTerm.trim() },
+                timeout: SYNC_TIMEOUT_MS,
+            });
+            const rows: SupplierSearchResult[] = response.data ?? [];
+            setSupplierResults(rows);
+            const exact = rows.find((r) => r.sku.toLowerCase() === supplierTerm.trim().toLowerCase());
+            setSelectedSku(exact ? exact.sku : null);
+        } catch (err: any) {
+            setError(err?.response?.data?.error || err?.response?.data?.detail || err.message);
+        } finally {
+            setBusy(false);
+        }
+    }, [context.api, supplierTerm]);
+
+    const importFromMouser = useCallback(async () => {
+        if (!selectedSku || !categoryPk) return;
+        setBusy(true);
+        setError(null);
+        let partPk: number | null = null;
+        try {
+            const response = await context.api.post('/api/supplier/import/', {
+                plugin: PLUGIN_SLUG,
+                supplier: SUPPLIER_SLUG,
+                part_import_id: selectedSku,
+                category_id: Number(categoryPk),
+            }, { timeout: SYNC_TIMEOUT_MS });
+            partPk = response.data?.part_id ?? null;
+        } catch (err: any) {
+            setError(`Import from Mouser failed: ${err?.response?.data?.detail || err.message}`);
+            setBusy(false);
+            return;
+        }
+        setCreatedPartPk(partPk);
+        setBusy(false);
+        if (partPk) await resolve('created', partPk);
+    }, [context.api, selectedSku, categoryPk, resolve]);
+
+    // InvenTree's own "Add Part" form (the same one as Parts -> Add Part):
+    // field definitions, validation and the category picker all come from
+    // InvenTree itself. Pre-filled from OMG; on save, the new part is
+    // linked and reported back exactly like a Mouser import.
+    const createPartForm = context.forms.create({
+        url: ApiEndpoints.part_list,
+        title: 'Create part in InvenTree',
+        fields: {
+            category: {},
+            name: {},
+            IPN: {},
+            description: {},
+            keywords: {},
+            link: {},
+            units: {},
+            component: {},
+            purchaseable: {},
+            active: {},
+        },
+        initialData: {
+            name: omg?.part_no || pending?.mpn || item.part_number,
+            description: omg?.description || pending?.description || '',
+            link: pending?.url || '',
+            component: true,
+            purchaseable: true,
+            active: true,
+        },
+        follow: false,
+        successMessage: null,
+        onFormSuccess: (data: any) => {
+            if (data?.pk) {
+                setCreatedPartPk(data.pk);
+                resolve('created', data.pk);
+            }
+        },
+    });
+
+    return (
+        <Alert color={pending ? 'blue' : 'yellow'} title={omg?.label ? `${omg.label} — ${item.part_number}` : item.part_number}>
+            <Stack gap={6}>
+                <Text size="sm">{item.notes}</Text>
+
+                {omg && (omg.part_no || omg.description) && (
+                    <Text size="xs" c="dimmed">
+                        In OMG: {omg.part_no ? <b>{omg.part_no}</b> : 'no part number'}
+                        {omg.description ? ` — ${omg.description}` : ''}
+                    </Text>
+                )}
+
+                {pending && (
+                    <Group gap="xs">
+                        <Badge color="blue" variant="light">Mouser pending part</Badge>
+                        <Text size="xs"><b>{pending.mpn}</b>{pending.manufacturer ? ` (${pending.manufacturer})` : ''}</Text>
+                        {pending.url && <Anchor size="xs" href={pending.url} target="_blank">View on Mouser</Anchor>}
+                    </Group>
+                )}
+
+                {item.candidates.length > 0 && (
+                    <Group gap="xs">
+                        {item.candidates.map((c) => (
+                            <Button key={c.pk} size="xs" variant="outline" loading={busy}
+                                    onClick={() => resolve('link', c.pk)}>
+                                Use {c.name || c.ipn}
+                            </Button>
+                        ))}
+                    </Group>
+                )}
+
+                <Group gap="xs">
+                    {item.omg_object_type && (
+                        <>
+                            <Button size="xs" variant={mode === 'import' ? 'filled' : 'light'}
+                                    onClick={() => setMode(mode === 'import' ? 'none' : 'import')}>
+                                {pending ? 'Import pending part from Mouser' : 'Import from Mouser'}
+                            </Button>
+                            <Button size="xs" variant={mode === 'search' ? 'filled' : 'light'}
+                                    onClick={() => setMode(mode === 'search' ? 'none' : 'search')}>
+                                Search InvenTree
+                            </Button>
+                            <Button size="xs" variant="light" onClick={() => createPartForm.open()}>
+                                Create part
+                            </Button>
+                        </>
+                    )}
+                    <Button size="xs" variant="subtle" color="gray" loading={busy} onClick={() => resolve('dismiss')}>
+                        Dismiss
+                    </Button>
+                </Group>
+
+                {mode === 'search' && (
+                    <Stack gap={6}>
+                        <Group gap="xs" align="flex-end">
+                            <TextInput size="xs" label="Search InvenTree parts" value={term}
+                                       onChange={(e) => setTerm(e.currentTarget.value)}
+                                       onKeyDown={(e) => e.key === 'Enter' && searchInvenTree()}
+                                       style={{ flex: 1 }} />
+                            <Button size="xs" onClick={searchInvenTree} loading={busy}>Search</Button>
+                        </Group>
+                        {partResults !== null && partResults.length === 0 && (
+                            <Text size="xs" c="dimmed">No InvenTree parts match "{term}".</Text>
+                        )}
+                        {(partResults || []).map((p) => (
+                            <Group key={p.pk} justify="space-between" wrap="nowrap">
+                                <Text size="xs"><b>{p.name}</b>{p.IPN ? ` [${p.IPN}]` : ''} — {p.description}</Text>
+                                <Button size="xs" variant="outline" loading={busy} onClick={() => resolve('link', p.pk)}>
+                                    Use this part
+                                </Button>
+                            </Group>
+                        ))}
+                    </Stack>
+                )}
+
+                {mode === 'import' && (
+                    <Stack gap={6}>
+                        {!pending && (
+                            <Group gap="xs" align="flex-end">
+                                <TextInput size="xs" label="Search Mouser" value={supplierTerm}
+                                           onChange={(e) => setSupplierTerm(e.currentTarget.value)}
+                                           onKeyDown={(e) => e.key === 'Enter' && searchMouser()}
+                                           style={{ flex: 1 }} />
+                                <Button size="xs" onClick={searchMouser} loading={busy}>Search</Button>
+                            </Group>
+                        )}
+                        {!pending && supplierResults !== null && supplierResults.length === 0 && (
+                            <Text size="xs" c="dimmed">Mouser has nothing for "{supplierTerm}".</Text>
+                        )}
+                        {!pending && (supplierResults || []).map((r) => (
+                            <Group key={r.sku} justify="space-between" wrap="nowrap">
+                                <Text size="xs">
+                                    <b>{r.sku}</b> — {r.description}{r.price ? ` (${r.price})` : ''}{' '}
+                                    {r.link && <Anchor size="xs" href={r.link} target="_blank">Mouser</Anchor>}
+                                </Text>
+                                {r.existing_part_id ? (
+                                    <Button size="xs" variant="outline" loading={busy}
+                                            onClick={() => resolve('link', r.existing_part_id as number)}>
+                                        Already in InvenTree — use it
+                                    </Button>
+                                ) : (
+                                    <Button size="xs" variant={selectedSku === r.sku ? 'filled' : 'outline'}
+                                            onClick={() => setSelectedSku(r.sku)}>
+                                        {selectedSku === r.sku ? 'Selected' : 'Select'}
+                                    </Button>
+                                )}
+                            </Group>
+                        ))}
+
+                        {selectedSku && (
+                            <Group gap="xs" align="flex-end">
+                                <Select
+                                    size="xs"
+                                    label={`Category for ${selectedSku}`}
+                                    placeholder="Type to search categories"
+                                    searchable
+                                    searchValue={categorySearch}
+                                    onSearchChange={setCategorySearch}
+                                    data={categoryOptions}
+                                    value={categoryPk}
+                                    onChange={setCategoryPk}
+                                    nothingFoundMessage="Type at least 2 characters"
+                                    style={{ flex: 1 }}
+                                />
+                                <Button size="xs" onClick={importFromMouser} loading={busy} disabled={!categoryPk}>
+                                    Import &amp; link
+                                </Button>
+                            </Group>
+                        )}
+                    </Stack>
+                )}
+
+                {createPartForm.modal}
+
+                {error && (
+                    <Alert color="red" p="xs">
+                        <Text size="xs">{error}</Text>
+                        {createdPartPk && (
+                            <Group gap="xs" mt={4}>
+                                <Text size="xs">The part was created in InvenTree (#{createdPartPk}) but isn't linked yet.</Text>
+                                <Button size="xs" variant="subtle" onClick={() => context.navigate(`/part/${createdPartPk}/`)}>
+                                    Open part
+                                </Button>
+                                <Button size="xs" variant="subtle" onClick={() => resolve('created', createdPartPk)}>
+                                    Try linking again
+                                </Button>
+                            </Group>
+                        )}
+                    </Alert>
+                )}
+            </Stack>
+        </Alert>
+    );
 }
 
 interface HarnessSearchResult {
@@ -60,7 +443,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [syncing, setSyncing] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [queue, setQueue] = useState<UnresolvedItem[]>([]);
-    const [resolvingId, setResolvingId] = useState<number | null>(null);
+    const [queueContextError, setQueueContextError] = useState<string | null>(null);
 
     // Link flow (only used while !isLinked)
     // Pre-filled with the part's own name — that's the overwhelmingly
@@ -107,7 +490,10 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.get('/plugin/omg-harness-import/unresolved/', {
                 params: { part_pk: partId },
             });
-            setQueue(response.data || []);
+            // {items, omg_context_error} when scoped to a part (plain list from older plugin versions)
+            const data = response.data;
+            setQueue(Array.isArray(data) ? data : (data?.items || []));
+            setQueueContextError(Array.isArray(data) ? null : (data?.omg_context_error || null));
         } catch (err: any) {
             // Same principle as loadStatus — a failed queue fetch shouldn't
             // break the rest of the panel, just show nothing to review.
@@ -133,7 +519,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
                 harness_part_number: partName,
                 target_part_pk: partId,
-            });
+            }, { timeout: SYNC_TIMEOUT_MS });
             setLastBatch(response.data);
             const flagged = response.data?.flagged_items || 0;
             notifications.show({
@@ -199,7 +585,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
                 harness_part_number: partNumber,
                 target_part_pk: partId,
-            });
+            }, { timeout: SYNC_TIMEOUT_MS });
             setLastBatch(response.data);
             setIsLinked(true);
             notifications.show({
@@ -240,24 +626,6 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         }
     }, [partId, context.api]);
 
-    const resolveItem = useCallback(async (itemId: number, action: 'link' | 'dismiss', partPk?: number) => {
-        setResolvingId(itemId);
-        setError(null);
-        try {
-            await context.api.post(`/plugin/omg-harness-import/unresolved/${itemId}/resolve/`, {
-                action,
-                part_pk: partPk,
-            });
-            await loadQueue();
-            await loadStatus();
-            notifications.show({ title: 'Resolved', message: 'Item resolved.', color: 'green' });
-        } catch (err: any) {
-            const detail = err?.response?.data?.detail || err.message;
-            setError(`Could not resolve item: ${detail}`);
-        } finally {
-            setResolvingId(null);
-        }
-    }, [context.api, loadQueue, loadStatus]);
 
     if (loadingStatus) {
         return <Text size="sm" c="dimmed">Checking OMG link status…</Text>;
@@ -375,36 +743,11 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             {queue.length > 0 && (
                 <>
                     <Title order={5} mt="md">Needs review</Title>
+                    {queueContextError && <Alert color="orange">{queueContextError}</Alert>}
                     <Stack gap="xs">
                         {queue.map((item) => (
-                            <Alert key={item.id} color="yellow" title={item.part_number}>
-                                <Text size="sm" mb={item.candidates.length > 0 ? 'xs' : 0}>{item.notes}</Text>
-                                {item.candidates.length > 0 && (
-                                    <Group gap="xs">
-                                        {item.candidates.map((c) => (
-                                            <Button
-                                                key={c.pk}
-                                                size="xs"
-                                                variant="outline"
-                                                loading={resolvingId === item.id}
-                                                onClick={() => resolveItem(item.id, 'link', c.pk)}
-                                            >
-                                                Use {c.name || c.ipn}
-                                            </Button>
-                                        ))}
-                                    </Group>
-                                )}
-                                <Button
-                                    size="xs"
-                                    variant="subtle"
-                                    color="gray"
-                                    mt="xs"
-                                    loading={resolvingId === item.id}
-                                    onClick={() => resolveItem(item.id, 'dismiss')}
-                                >
-                                    Dismiss
-                                </Button>
-                            </Alert>
+                            <ReviewItem key={item.id} item={item} context={context}
+                                        onChanged={async () => { await loadQueue(); await loadStatus(); }} />
                         ))}
                     </Stack>
                 </>

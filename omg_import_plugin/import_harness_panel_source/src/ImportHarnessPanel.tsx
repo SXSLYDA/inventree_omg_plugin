@@ -3,6 +3,14 @@ import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput, Title } fr
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
+// A sync is one long server-side request: InvenTree fetches the BOM from
+// OMG, matches/updates every BOM line, then reports back to OMG's
+// webhook. That regularly takes longer than the 5s default timeout on
+// InvenTree's API client ("timeout of 5000ms exceeded"), so the panel
+// reported a failure even when the sync finished fine. Only the
+// import/sync calls get the longer timeout; everything else keeps the default.
+const SYNC_TIMEOUT_MS = 120000;
+
 /**
  * "Import Harness from OMG" dashboard item — lives on the main
  * dashboard (get_ui_dashboard_items), not tied to any specific part or
@@ -148,7 +156,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             };
             if (categoryPk !== '') body.category_pk = categoryPk;
 
-            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', body);
+            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', body, { timeout: SYNC_TIMEOUT_MS });
             const batch = response.data;
             const reconciliationWarning = batch.reconciliation_pushed === false
                 ? ' Import succeeded, but reporting the result back to OMG failed — check the InvenTree Webhook Token setting.'
