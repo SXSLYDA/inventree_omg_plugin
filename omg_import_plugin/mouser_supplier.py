@@ -42,6 +42,19 @@ IMAGE_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 )
+# The rest of what a browser sends when loading an image from a Mouser
+# page. Mouser's bot protection judges the whole request, not just the
+# User-Agent - with only a User-Agent it answered with an HTML page
+# ("Not an image (Content-Type: text/html)") instead of the image.
+IMAGE_BROWSER_HEADERS = {
+    "User-Agent": IMAGE_USER_AGENT,
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-AU,en;q=0.9",
+    "Referer": "https://www.mouser.com/",
+    "Sec-Fetch-Dest": "image",
+    "Sec-Fetch-Mode": "no-cors",
+    "Sec-Fetch-Site": "same-origin",
+}
 IMAGE_TIMEOUT_SECONDS = 10
 IMAGE_MAX_BYTES = 5 * 1024 * 1024
 
@@ -92,6 +105,33 @@ def _is_public_host(hostname):
     return bool(infos)
 
 
+def _describe_non_image(response, url, content_type):
+    """
+    Why a download wasn't an image, including what the server actually
+    sent back - e.g. the title of a bot-protection page - so the Error Logs
+    say "Access Denied" (blocked) vs. a moved/missing image, instead of
+    just "text/html".
+    """
+    import re
+    snippet = ""
+    try:
+        body = response.raw.read(65536, decode_content=True) or b""
+        text = body.decode("utf-8", errors="replace")
+        title = re.search(r"<title[^>]*>(.*?)</title>", text, re.I | re.S)
+        snippet = (title.group(1) if title else re.sub(r"<[^>]+>", " ", text))
+        snippet = " ".join(snippet.split())[:160]
+    except Exception:
+        pass
+    blocked = any(word in snippet.lower() for word in ("access denied", "denied", "forbidden", "captcha", "robot", "blocked"))
+    return (
+        f"Mouser sent back a {content_type or 'non-image'} response, not an image "
+        f"(status {response.status_code}, final URL {url}"
+        + (f", page says: '{snippet}'" if snippet else "")
+        + ")."
+        + (" This looks like Mouser's bot protection blocking this server." if blocked else "")
+    )
+
+
 def _fetch_image(url):
     """
     Download an image with a browser User-Agent - used when InvenTree's own
@@ -106,7 +146,7 @@ def _fetch_image(url):
     import requests
     from PIL import Image
 
-    headers = {"User-Agent": IMAGE_USER_AGENT, "Accept": "image/*"}
+    headers = dict(IMAGE_BROWSER_HEADERS)
     for _hop in range(5):
         parsed = urlparse(url)
         if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -123,11 +163,9 @@ def _fetch_image(url):
     else:
         raise ValueError("Too many redirects")
 
-    if response.status_code != 200:
-        raise ValueError(f"Server responded with status {response.status_code}")
     content_type = response.headers.get("Content-Type", "")
-    if content_type and not content_type.lower().startswith("image/"):
-        raise ValueError(f"Not an image (Content-Type: {content_type})")
+    if response.status_code != 200 or (content_type and not content_type.lower().startswith("image/")):
+        raise ValueError(_describe_non_image(response, url, content_type))
     if int(response.headers.get("Content-Length") or 0) > IMAGE_MAX_BYTES:
         raise ValueError("Image is larger than the size limit")
 

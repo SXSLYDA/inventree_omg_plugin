@@ -2,7 +2,8 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, Anchor, Badge, Button, Group, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
-import { ApiEndpoints, ModelType, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
+import { ApiEndpoints, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
+import SupplierImportWizard from './SupplierImportWizard';
 
 // A sync is one long server-side request: InvenTree fetches the BOM from
 // OMG, matches/updates every BOM line, then reports back to OMG's
@@ -68,16 +69,6 @@ interface InvenTreePartRow {
     description: string;
 }
 
-interface SupplierSearchResult {
-    id: string;
-    sku: string;
-    name: string;
-    description: string;
-    price: string | null;
-    link: string;
-    existing_part_id: number | null;
-}
-
 // Review list sections, in display order. Items not tied to an OMG object
 // (e.g. a stale BOM line, or a harness rename InvenTree refused) go last.
 const REVIEW_GROUPS: { key: string; title: string }[] = [
@@ -115,11 +106,11 @@ const SUPPLIER_SLUG = 'mouser';
  * One item in the "Needs review" list. Besides the existing candidate
  * picks and Dismiss, it can:
  *   - Search InvenTree and link an existing part.
- *   - Import the part from Mouser through InvenTree's own supplier import
- *     (the same /api/supplier/import/ endpoint - and so the same
- *     MouserSupplierMixin code - as Parts -> Add Parts -> Import from
- *     Supplier). If OMG has a Mouser pending part for this item, its MPN
- *     is already selected: pick a category and import.
+ *   - Import from Mouser in the Import Supplier Part wizard
+ *     (SupplierImportWizard - a copy of InvenTree's own wizard, which
+ *     plugins can't open directly), with Mouser selected and the pending
+ *     MPN / OMG part number already searched. The new part is linked and
+ *     reported to OMG when the wizard is closed.
  *   - Create a part by hand with InvenTree's own "Add Part" form (for
  *     parts that aren't on Mouser), pre-filled from OMG's part number,
  *     description and - if there's a pending part - its Mouser link.
@@ -136,7 +127,7 @@ function ReviewItem({ item, context, onChanged }: {
     const pending = omg?.pending_part || null;
     const defaultTerm = pending?.mpn || omg?.part_no || '';
 
-    const [mode, setMode] = useState<'none' | 'search' | 'import'>('none');
+    const [mode, setMode] = useState<'none' | 'search'>('none');
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [createdPartPk, setCreatedPartPk] = useState<number | null>(null);
@@ -145,15 +136,11 @@ function ReviewItem({ item, context, onChanged }: {
     const [term, setTerm] = useState(defaultTerm);
     const [partResults, setPartResults] = useState<InvenTreePartRow[] | null>(null);
 
-    // Import from Mouser
-    const [supplierTerm, setSupplierTerm] = useState(defaultTerm);
-    const [supplierResults, setSupplierResults] = useState<SupplierSearchResult[] | null>(null);
-    // The Mouser part the native import form is for (a search result, or
-    // the pending part's MPN); openImport asks for the form to open once
-    // this render has given it the new part number.
-    // A Mouser PART NUMBER where known (unique per listing), else an MPN.
-    const [importSku, setImportSku] = useState<string | null>(pending ? (pending.spn || pending.mpn) : null);
-    const [openImport, setOpenImport] = useState(false);
+    // Import Supplier Part wizard. importedPartPk is held until the wizard
+    // closes: linking reloads the queue (removing this item), which must not
+    // happen while the user is still on the Parameters / Stock steps.
+    const [wizardOpen, setWizardOpen] = useState(false);
+    const [importedPartPk, setImportedPartPk] = useState<number | null>(null);
 
     const resolve = useCallback(async (action: 'link' | 'created' | 'dismiss', partPk?: number) => {
         setBusy(true);
@@ -192,82 +179,7 @@ function ReviewItem({ item, context, onChanged }: {
         }
     }, [context.api, term]);
 
-    const searchMouser = useCallback(async () => {
-        if (!supplierTerm.trim()) return;
-        setBusy(true);
-        setError(null);
-        try {
-            const response = await context.api.get('/api/supplier/search/', {
-                params: { plugin: PLUGIN_SLUG, supplier: SUPPLIER_SLUG, term: supplierTerm.trim() },
-                timeout: SYNC_TIMEOUT_MS,
-            });
-            setSupplierResults(response.data ?? []);
-        } catch (err: any) {
-            setError(err?.response?.data?.error || err?.response?.data?.detail || err.message);
-        } finally {
-            setBusy(false);
-        }
-    }, [context.api, supplierTerm]);
 
-    // InvenTree's own form for the supplier import - the same
-    // /api/supplier/import/ endpoint InvenTree's "Import from Supplier"
-    // wizard posts to (and so this plugin's MouserSupplierMixin), rendered
-    // with InvenTree's native form and category picker. The wizard itself
-    // isn't exposed to plugins, so this is its import step as a native form.
-    // That endpoint doesn't describe its input fields to the form, so they
-    // are defined here (ignorePermissionCheck skips asking for them), and
-    // processFormData guarantees the hidden values are sent.
-    const importPartForm = context.forms.create({
-        url: ApiEndpoints.plugin_supplier_import,
-        method: 'POST',
-        title: importSku ? `Import ${importSku} from Mouser` : 'Import from Mouser',
-        ignorePermissionCheck: true,
-        fields: {
-            category_id: {
-                field_type: 'related field',
-                model: ModelType.partcategory,
-                api_url: ApiEndpoints.category_list,
-                label: 'Category',
-                description: 'Category for the new InvenTree part',
-                required: true,
-            },
-        },
-        processFormData: (data: any) => ({
-            ...data,
-            plugin: PLUGIN_SLUG,
-            supplier: SUPPLIER_SLUG,
-            part_import_id: importSku,
-        }),
-        preFormContent: importSku ? (
-            <Text size="sm" mb="xs">
-                Imports <b>{importSku}</b> from Mouser - part, manufacturer part, Mouser supplier part and
-                price breaks - then links it here and reports it to OMG.
-            </Text>
-        ) : undefined,
-        submitText: 'Import & link',
-        timeout: SYNC_TIMEOUT_MS,
-        follow: false,
-        successMessage: null,
-        onFormSuccess: (data: any) => {
-            const partPk = data?.part_id;
-            if (partPk) {
-                setCreatedPartPk(partPk);
-                resolve('created', partPk);
-            }
-        },
-    });
-
-    useEffect(() => {
-        if (openImport && importSku) {
-            importPartForm.open();
-            setOpenImport(false);
-        }
-    }, [openImport, importSku, importPartForm]);
-
-    const startImport = useCallback((sku: string) => {
-        setImportSku(sku);
-        setOpenImport(true);
-    }, []);
 
     // InvenTree's own "Add Part" form (the same one as Parts -> Add Part):
     // field definitions, validation and the category picker all come from
@@ -343,8 +255,7 @@ function ReviewItem({ item, context, onChanged }: {
                 <Group gap="xs">
                     {item.omg_object_type && (
                         <>
-                            <Button size="xs" variant={mode === 'import' ? 'filled' : 'light'}
-                                    onClick={() => setMode(mode === 'import' ? 'none' : 'import')}>
+                            <Button size="xs" variant="light" onClick={() => setWizardOpen(true)}>
                                 {pending ? 'Import pending part from Mouser' : 'Import from Mouser'}
                             </Button>
                             <Button size="xs" variant={mode === 'search' ? 'filled' : 'light'}
@@ -384,53 +295,24 @@ function ReviewItem({ item, context, onChanged }: {
                     </Stack>
                 )}
 
-                {mode === 'import' && (
-                    <Stack gap={6}>
-                        {pending && (
-                            <Group gap="xs">
-                                <Button size="xs" onClick={() => startImport(pending.spn || pending.mpn)}>
-                                    Import {pending.mpn}{pending.spn ? ` (Mouser ${pending.spn})` : ''}
-                                </Button>
-                                <Text size="xs" c="dimmed">or search Mouser for a different part:</Text>
-                            </Group>
-                        )}
-                        <Group gap="xs" align="flex-end">
-                            <TextInput size="xs" label="Search Mouser" value={supplierTerm}
-                                       onChange={(e) => setSupplierTerm(e.currentTarget.value)}
-                                       onKeyDown={(e) => e.key === 'Enter' && searchMouser()}
-                                       style={{ flex: 1 }} />
-                            <Button size="xs" onClick={searchMouser} loading={busy}>Search</Button>
-                        </Group>
-                        {supplierResults !== null && supplierResults.length === 0 && (
-                            <Text size="xs" c="dimmed">Mouser has nothing for "{supplierTerm}".</Text>
-                        )}
-                        {(supplierResults || []).map((r, index) => (
-                            // r.sku is the Mouser part number - unique per listing, so
-                            // two listings of the same MPN are separate rows/choices
-                            // (index only guards against a duplicate from Mouser itself).
-                            <Group key={`${r.sku}-${index}`} justify="space-between" wrap="nowrap">
-                                <Text size="xs">
-                                    <b>{r.name}</b>{r.sku && r.sku !== r.name ? ` (Mouser ${r.sku})` : ''} — {r.description}
-                                    {r.price ? ` (${r.price})` : ''}{' '}
-                                    {r.link && <Anchor size="xs" href={r.link} target="_blank">Mouser</Anchor>}
-                                </Text>
-                                {r.existing_part_id ? (
-                                    <Button size="xs" variant="outline" loading={busy}
-                                            onClick={() => resolve('link', r.existing_part_id as number)}>
-                                        Already in InvenTree — use it
-                                    </Button>
-                                ) : (
-                                    <Button size="xs" variant="outline" onClick={() => startImport(r.sku)}>
-                                        Import…
-                                    </Button>
-                                )}
-                            </Group>
-                        ))}
-                    </Stack>
-                )}
-
                 {createPartForm.modal}
-                {importPartForm.modal}
+                <SupplierImportWizard
+                    context={context}
+                    opened={wizardOpen}
+                    title={`Import Supplier Part — ${reviewTitle(item)}`}
+                    preferredSupplier={SUPPLIER_SLUG}
+                    initialTerm={pending ? (pending.spn || pending.mpn) : (omg?.part_no || '')}
+                    onImported={(result) => setImportedPartPk(result.part_id)}
+                    onClose={() => {
+                        setWizardOpen(false);
+                        if (importedPartPk) {
+                            const pk = importedPartPk;
+                            setImportedPartPk(null);
+                            setCreatedPartPk(pk);
+                            resolve('created', pk);
+                        }
+                    }}
+                />
 
                 {error && (
                     <Alert color="red" p="xs">
