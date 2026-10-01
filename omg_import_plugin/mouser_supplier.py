@@ -143,6 +143,27 @@ def _fetch_image(url):
     return img
 
 
+def _existing_part_for_listing(r):
+    """
+    The InvenTree part this exact Mouser listing already maps to, or None:
+    a SupplierPart with this Mouser part number as its SKU (what
+    import_supplier_part stores), else a ManufacturerPart with this MPN
+    from this manufacturer. MPN alone isn't enough - two manufacturers can
+    share an MPN, and that used to mark both listings "already in InvenTree".
+    """
+    spn = (r.get("spn") or "").strip()
+    if spn:
+        sp = SupplierPart.objects.filter(SKU__iexact=spn).select_related("part").first()
+        if sp:
+            return sp.part
+    manufacturer = (r.get("manufacturer") or "").strip()
+    mp_qs = ManufacturerPart.objects.filter(MPN__iexact=r["mpn"])
+    if manufacturer:
+        mp_qs = mp_qs.filter(manufacturer__name__iexact=manufacturer)
+    mp = mp_qs.select_related("part").first()
+    return mp.part if mp else None
+
+
 def _log_image_error(part, url):
     """
     Record a failed image download in InvenTree's Settings -> System ->
@@ -229,34 +250,52 @@ class MouserSupplierMixin(SupplierMixin):
         except Exception:
             return []
 
+        # Each result is identified by its MOUSER part number (spn), not
+        # the MPN: Mouser often lists one MPN several times (cut tape vs
+        # reel, or different manufacturers using the same number). Keyed
+        # by MPN, those listings were indistinguishable - selecting one
+        # selected them all, and importing re-searched by MPN and took the
+        # FIRST listing, whichever one was clicked. The spn is unique per
+        # listing, is what import_supplier_part() already stores as the
+        # SupplierPart SKU, and get_import_data() looks it up exactly.
+        term_key = term.strip().lower()
         search_results = []
         for r in results:
-            existing = ManufacturerPart.objects.filter(MPN__iexact=r["mpn"]).first()
+            spn = (r.get("spn") or "").strip()
+            manufacturer = (r.get("manufacturer") or "").strip()
             search_results.append(supplier.SearchResult(
-                sku=r["mpn"],
+                sku=spn or r["mpn"],
                 name=r["mpn"],
-                description=r.get("description") or "",
-                exact=(r["mpn"].strip().lower() == term.strip().lower()),
+                description=" — ".join(x for x in (manufacturer, r.get("description") or "") if x),
+                exact=term_key in (r["mpn"].strip().lower(), spn.lower()),
                 price=(f"{r['price_breaks'][0]['price']:.2f} {r['price_breaks'][0]['currency']}"
                        if r.get("price_breaks") else None),
                 link=r.get("url") or "",
                 image_url=r.get("image") or "",
-                existing_part=getattr(existing, "part", None),
+                existing_part=_existing_part_for_listing(r),
             ))
         return search_results
 
     def get_import_data(self, supplier_slug, part_id):
         """
-        part_id here is the mpn we used as `sku` in get_search_results —
-        re-searching by it gets the same normalized dict, no separate
-        cache needed since mouser_lookup's own search() already caches
-        short-term (see inventree_lookup.py's equivalent pattern).
+        part_id is the `sku` from get_search_results - normally the Mouser
+        part number (spn), which identifies exactly one listing - or an MPN
+        (e.g. a pending part with no spn stored, or an older caller).
+        Mouser's part-number search accepts either. Match order:
+          1. a listing whose Mouser part number is exactly part_id,
+          2. a listing whose MPN is exactly part_id (first, if Mouser has
+             several - only happens when an MPN was passed),
+          3. the only result.
         """
         api_key = self.get_setting("OMG_MOUSER_API_KEY")
         results = search_by_mpn(part_id, api_key) if api_key else []
-        exact = [r for r in results if r["mpn"].strip().lower() == part_id.strip().lower()]
-        if exact:
-            return exact[0]
+        key = part_id.strip().lower()
+        by_spn = [r for r in results if (r.get("spn") or "").strip().lower() == key]
+        if by_spn:
+            return by_spn[0]
+        by_mpn = [r for r in results if r["mpn"].strip().lower() == key]
+        if by_mpn:
+            return by_mpn[0]
         if len(results) == 1:
             return results[0]
         raise supplier.PartNotFoundError()

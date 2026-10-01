@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Anchor, Badge, Button, Group, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Group, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
-import { ApiEndpoints, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
+import { ApiEndpoints, ModelType, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
 // A sync is one long server-side request: InvenTree fetches the BOM from
 // OMG, matches/updates every BOM line, then reports back to OMG's
@@ -148,26 +148,12 @@ function ReviewItem({ item, context, onChanged }: {
     // Import from Mouser
     const [supplierTerm, setSupplierTerm] = useState(defaultTerm);
     const [supplierResults, setSupplierResults] = useState<SupplierSearchResult[] | null>(null);
-    const [selectedSku, setSelectedSku] = useState<string | null>(pending?.mpn || null);
-    const [categorySearch, setCategorySearch] = useState('');
-    const [categoryOptions, setCategoryOptions] = useState<{ value: string; label: string }[]>([]);
-    const [categoryPk, setCategoryPk] = useState<string | null>(null);
-
-    useEffect(() => {
-        if (categorySearch.trim().length < 2) return;
-        const timer = setTimeout(async () => {
-            try {
-                const response = await context.api.get('/api/part/category/', {
-                    params: { search: categorySearch.trim(), limit: 20 },
-                });
-                const rows = response.data?.results ?? response.data ?? [];
-                setCategoryOptions(rows.map((c: any) => ({ value: String(c.pk), label: c.pathstring || c.name })));
-            } catch {
-                setCategoryOptions([]);
-            }
-        }, 400);
-        return () => clearTimeout(timer);
-    }, [categorySearch, context.api]);
+    // The Mouser part the native import form is for (a search result, or
+    // the pending part's MPN); openImport asks for the form to open once
+    // this render has given it the new part number.
+    // A Mouser PART NUMBER where known (unique per listing), else an MPN.
+    const [importSku, setImportSku] = useState<string | null>(pending ? (pending.spn || pending.mpn) : null);
+    const [openImport, setOpenImport] = useState(false);
 
     const resolve = useCallback(async (action: 'link' | 'created' | 'dismiss', partPk?: number) => {
         setBusy(true);
@@ -215,10 +201,7 @@ function ReviewItem({ item, context, onChanged }: {
                 params: { plugin: PLUGIN_SLUG, supplier: SUPPLIER_SLUG, term: supplierTerm.trim() },
                 timeout: SYNC_TIMEOUT_MS,
             });
-            const rows: SupplierSearchResult[] = response.data ?? [];
-            setSupplierResults(rows);
-            const exact = rows.find((r) => r.sku.toLowerCase() === supplierTerm.trim().toLowerCase());
-            setSelectedSku(exact ? exact.sku : null);
+            setSupplierResults(response.data ?? []);
         } catch (err: any) {
             setError(err?.response?.data?.error || err?.response?.data?.detail || err.message);
         } finally {
@@ -226,28 +209,65 @@ function ReviewItem({ item, context, onChanged }: {
         }
     }, [context.api, supplierTerm]);
 
-    const importFromMouser = useCallback(async () => {
-        if (!selectedSku || !categoryPk) return;
-        setBusy(true);
-        setError(null);
-        let partPk: number | null = null;
-        try {
-            const response = await context.api.post('/api/supplier/import/', {
-                plugin: PLUGIN_SLUG,
-                supplier: SUPPLIER_SLUG,
-                part_import_id: selectedSku,
-                category_id: Number(categoryPk),
-            }, { timeout: SYNC_TIMEOUT_MS });
-            partPk = response.data?.part_id ?? null;
-        } catch (err: any) {
-            setError(`Import from Mouser failed: ${err?.response?.data?.detail || err.message}`);
-            setBusy(false);
-            return;
+    // InvenTree's own form for the supplier import - the same
+    // /api/supplier/import/ endpoint InvenTree's "Import from Supplier"
+    // wizard posts to (and so this plugin's MouserSupplierMixin), rendered
+    // with InvenTree's native form and category picker. The wizard itself
+    // isn't exposed to plugins, so this is its import step as a native form.
+    // That endpoint doesn't describe its input fields to the form, so they
+    // are defined here (ignorePermissionCheck skips asking for them), and
+    // processFormData guarantees the hidden values are sent.
+    const importPartForm = context.forms.create({
+        url: ApiEndpoints.plugin_supplier_import,
+        method: 'POST',
+        title: importSku ? `Import ${importSku} from Mouser` : 'Import from Mouser',
+        ignorePermissionCheck: true,
+        fields: {
+            category_id: {
+                field_type: 'related field',
+                model: ModelType.partcategory,
+                api_url: ApiEndpoints.category_list,
+                label: 'Category',
+                description: 'Category for the new InvenTree part',
+                required: true,
+            },
+        },
+        processFormData: (data: any) => ({
+            ...data,
+            plugin: PLUGIN_SLUG,
+            supplier: SUPPLIER_SLUG,
+            part_import_id: importSku,
+        }),
+        preFormContent: importSku ? (
+            <Text size="sm" mb="xs">
+                Imports <b>{importSku}</b> from Mouser - part, manufacturer part, Mouser supplier part and
+                price breaks - then links it here and reports it to OMG.
+            </Text>
+        ) : undefined,
+        submitText: 'Import & link',
+        timeout: SYNC_TIMEOUT_MS,
+        follow: false,
+        successMessage: null,
+        onFormSuccess: (data: any) => {
+            const partPk = data?.part_id;
+            if (partPk) {
+                setCreatedPartPk(partPk);
+                resolve('created', partPk);
+            }
+        },
+    });
+
+    useEffect(() => {
+        if (openImport && importSku) {
+            importPartForm.open();
+            setOpenImport(false);
         }
-        setCreatedPartPk(partPk);
-        setBusy(false);
-        if (partPk) await resolve('created', partPk);
-    }, [context.api, selectedSku, categoryPk, resolve]);
+    }, [openImport, importSku, importPartForm]);
+
+    const startImport = useCallback((sku: string) => {
+        setImportSku(sku);
+        setOpenImport(true);
+    }, []);
 
     // InvenTree's own "Add Part" form (the same one as Parts -> Add Part):
     // field definitions, validation and the category picker all come from
@@ -366,22 +386,32 @@ function ReviewItem({ item, context, onChanged }: {
 
                 {mode === 'import' && (
                     <Stack gap={6}>
-                        {!pending && (
-                            <Group gap="xs" align="flex-end">
-                                <TextInput size="xs" label="Search Mouser" value={supplierTerm}
-                                           onChange={(e) => setSupplierTerm(e.currentTarget.value)}
-                                           onKeyDown={(e) => e.key === 'Enter' && searchMouser()}
-                                           style={{ flex: 1 }} />
-                                <Button size="xs" onClick={searchMouser} loading={busy}>Search</Button>
+                        {pending && (
+                            <Group gap="xs">
+                                <Button size="xs" onClick={() => startImport(pending.spn || pending.mpn)}>
+                                    Import {pending.mpn}{pending.spn ? ` (Mouser ${pending.spn})` : ''}
+                                </Button>
+                                <Text size="xs" c="dimmed">or search Mouser for a different part:</Text>
                             </Group>
                         )}
-                        {!pending && supplierResults !== null && supplierResults.length === 0 && (
+                        <Group gap="xs" align="flex-end">
+                            <TextInput size="xs" label="Search Mouser" value={supplierTerm}
+                                       onChange={(e) => setSupplierTerm(e.currentTarget.value)}
+                                       onKeyDown={(e) => e.key === 'Enter' && searchMouser()}
+                                       style={{ flex: 1 }} />
+                            <Button size="xs" onClick={searchMouser} loading={busy}>Search</Button>
+                        </Group>
+                        {supplierResults !== null && supplierResults.length === 0 && (
                             <Text size="xs" c="dimmed">Mouser has nothing for "{supplierTerm}".</Text>
                         )}
-                        {!pending && (supplierResults || []).map((r) => (
-                            <Group key={r.sku} justify="space-between" wrap="nowrap">
+                        {(supplierResults || []).map((r, index) => (
+                            // r.sku is the Mouser part number - unique per listing, so
+                            // two listings of the same MPN are separate rows/choices
+                            // (index only guards against a duplicate from Mouser itself).
+                            <Group key={`${r.sku}-${index}`} justify="space-between" wrap="nowrap">
                                 <Text size="xs">
-                                    <b>{r.sku}</b> — {r.description}{r.price ? ` (${r.price})` : ''}{' '}
+                                    <b>{r.name}</b>{r.sku && r.sku !== r.name ? ` (Mouser ${r.sku})` : ''} — {r.description}
+                                    {r.price ? ` (${r.price})` : ''}{' '}
                                     {r.link && <Anchor size="xs" href={r.link} target="_blank">Mouser</Anchor>}
                                 </Text>
                                 {r.existing_part_id ? (
@@ -390,38 +420,17 @@ function ReviewItem({ item, context, onChanged }: {
                                         Already in InvenTree — use it
                                     </Button>
                                 ) : (
-                                    <Button size="xs" variant={selectedSku === r.sku ? 'filled' : 'outline'}
-                                            onClick={() => setSelectedSku(r.sku)}>
-                                        {selectedSku === r.sku ? 'Selected' : 'Select'}
+                                    <Button size="xs" variant="outline" onClick={() => startImport(r.sku)}>
+                                        Import…
                                     </Button>
                                 )}
                             </Group>
                         ))}
-
-                        {selectedSku && (
-                            <Group gap="xs" align="flex-end">
-                                <Select
-                                    size="xs"
-                                    label={`Category for ${selectedSku}`}
-                                    placeholder="Type to search categories"
-                                    searchable
-                                    searchValue={categorySearch}
-                                    onSearchChange={setCategorySearch}
-                                    data={categoryOptions}
-                                    value={categoryPk}
-                                    onChange={setCategoryPk}
-                                    nothingFoundMessage="Type at least 2 characters"
-                                    style={{ flex: 1 }}
-                                />
-                                <Button size="xs" onClick={importFromMouser} loading={busy} disabled={!categoryPk}>
-                                    Import &amp; link
-                                </Button>
-                            </Group>
-                        )}
                     </Stack>
                 )}
 
                 {createPartForm.modal}
+                {importPartForm.modal}
 
                 {error && (
                     <Alert color="red" p="xs">
