@@ -264,6 +264,32 @@ def _flag_connector_part_issue(batch, part, message):
     )
 
 
+def _connector_pin_data(c):
+    """
+    (terminal_only, used_pin_ids, pin_specs) for one OMG connector row,
+    taken as OMG sends them. OMG owns the pin rules (see its
+    components/inventree_bom_export.py): "-" is never a pin, a connector
+    whose pins are all "-" is terminal_only (no contacts, no blanks), and
+    each real pin appears once however many wires share it, with the
+    wires' combined size. The plugin doesn't repeat those rules - one
+    place to change them.
+    """
+    if c.get("terminal_only"):
+        return True, [], []
+    return False, list(c.get("used_pin_ids", [])), list(c.get("pin_specs", []))
+
+
+def _labels_text(labels, limit=12):
+    """'EARTH 1, EARTH 2, ... EARTH 9' - every connector, naturally sorted, de-duplicated."""
+    import re
+    def key(label):
+        return [int(t) if t.isdigit() else t.lower() for t in re.split(r"(\d+)", label or "")]
+    unique = sorted({l for l in labels if l}, key=key)
+    if len(unique) > limit:
+        return ", ".join(unique[:limit]) + f" and {len(unique) - limit} more"
+    return ", ".join(unique)
+
+
 def _cavity_bom_additions(batch, part, agg, contact_count_param):
     """
     Returns a list of (sub_part, quantity) tuples to add to the BOM for
@@ -295,9 +321,12 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
         contact_qty = defaultdict(int)
         for pin in agg["pin_specs"]:
             gauge = pin.get("conductor_size")
+            shared = len(pin.get("wire_ids") or [pin.get("wire_id")]) > 1
             if gauge is None:
-                _flag_wire(batch, pin["wire_id"], "This wire has no gauge set yet, and its connector has "
-                                                   "multiple contact variants — can't tell which contact it needs.",
+                _flag_wire(batch, pin["wire_id"],
+                           (f"A wire sharing pin {pin.get('pin_id')} has no gauge set yet" if shared
+                            else "This wire has no gauge set yet") +
+                           ", and its connector has multiple contact variants — can't tell which contact it needs.",
                            wire_no=pin.get("wire_no"))
                 continue
             contact_part, status = native.select_contact_for_gauge(
@@ -313,8 +342,11 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
                            wire_no=pin.get("wire_no"))
             else:
                 _flag_wire(batch, pin["wire_id"],
-                           f"No contact variant on {part.name or part.IPN} covers this wire's gauge ({gauge}) — "
-                           f"add one, or fix its Min/Max Gauge parameters.",
+                           (f"No contact variant on {part.name or part.IPN} covers the combined gauge ({gauge}) of the "
+                            f"{len(pin['wire_ids'])} wires sharing pin {pin.get('pin_id')} — add one, or fix its Min/Max "
+                            f"Gauge parameters." if shared else
+                            f"No contact variant on {part.name or part.IPN} covers this wire's gauge ({gauge}) — "
+                            f"add one, or fix its Min/Max Gauge parameters."),
                            wire_no=pin.get("wire_no"))
         for pk, qty in contact_qty.items():
             from part.models import Part as _Part
@@ -322,7 +354,7 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
     elif total_used > 0:
         _flag_connector_part_issue(
             batch, part,
-            f"{total_used} contact(s) consumed by {part.name or part.IPN} ({agg['label']}) but no related part is "
+            f"{total_used} contact(s) consumed by {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) but no related part is "
             f"tagged Component Type = Contact for it yet — add a Related Part and set its type.",
         )
 
@@ -342,7 +374,7 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
             else:
                 _flag_connector_part_issue(
                     batch, part,
-                    f"{missing} blank(s) needed for {part.name or part.IPN} ({agg['label']}) but no related part is "
+                    f"{missing} blank(s) needed for {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) but no related part is "
                     f"tagged Component Type = Blank for it yet.",
                 )
     else:
@@ -352,7 +384,7 @@ def _cavity_bom_additions(batch, part, agg, contact_count_param):
             if approx_missing > 0:
                 _flag_connector_part_issue(
                     batch, part,
-                    f"~{approx_missing} blank(s) estimated for {part.name or part.IPN} ({agg['label']}) from the "
+                    f"~{approx_missing} blank(s) estimated for {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) from the "
                     f"'{contact_count_param}' parameter — APPROXIMATE, can be wrong if this connector's "
                     f"cavity lettering skips positions. Set a '{native.DEFAULT_CAVITY_LAYOUT_PARAM}' "
                     f"parameter on {part.name or part.IPN} for an exact count.",
@@ -470,7 +502,11 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
             "omg_object_type": "harness", "omg_object_id": harness_id, "inventree_pk": harness_part.pk,
         })
 
-    connector_agg = defaultdict(lambda: {"quantity": 0, "label": "", "connector_ids": [], "instances": [], "pin_specs": []})
+    # labels: every connector of this part; pin_labels: only those that
+    # actually have pins (need contacts / may need blanks) - what the
+    # contact and blank messages name.
+    connector_agg = defaultdict(lambda: {"quantity": 0, "labels": [], "pin_labels": [], "label_by_id": {},
+                                         "connector_ids": [], "instances": [], "pin_specs": []})
     for c in omg_bom_data.get("connectors", []):
         if c.get("pending_part_id") and not c.get("inventree_pk"):
             _flag_connector(batch, c["connector_id"], c.get("label", ""),
@@ -503,24 +539,28 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
                 continue
 
         connector_agg[pk]["quantity"] += 1
-        connector_agg[pk]["label"] = c.get("label", "")
+        # Every connector of this part, by its own label - not one label
+        # overwritten by the last connector (flags used to name only the
+        # last one, e.g. "EARTH 9" for contacts used across EARTH 1-9).
+        connector_agg[pk]["labels"].append(c.get("label", ""))
+        connector_agg[pk]["label_by_id"][c["connector_id"]] = c.get("label", "")
         connector_agg[pk]["connector_ids"].append(c["connector_id"])
-        # NOT wrapped in set() — get_used_pin_ids() may deliberately return
-        # a list with repeats (e.g. "-" repeated once per wire, for
-        # connectors using "-" as a "no distinguishable pin ID" convention
-        # — see that function's docstring). Wrapping in set() here would
-        # collapse those repeats back down to one and undercount contacts
-        # consumed. set(valid_cavities) - instance_pins below still works
-        # correctly with a list on the right-hand side.
-        connector_agg[pk]["instances"].append(list(c.get("used_pin_ids", [])))
-        connector_agg[pk]["pin_specs"].extend(c.get("pin_specs", []))
+        # One entry per real pin (shared pins once, "-" never); a
+        # terminal-only connector (all "-") contributes no contacts and no
+        # blanks - see _connector_pin_data().
+        terminal_only, used_pins, specs = _connector_pin_data(c)
+        if not terminal_only:
+            connector_agg[pk]["instances"].append(used_pins)
+            connector_agg[pk]["pin_specs"].extend(specs)
+            if used_pins:
+                connector_agg[pk]["pin_labels"].append(c.get("label", ""))
 
     for pk, agg in connector_agg.items():
         try:
             part = Part.objects.get(pk=pk)
         except Part.DoesNotExist:
             for cid in agg["connector_ids"]:
-                _flag_connector(batch, cid, agg["label"], "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
+                _flag_connector(batch, cid, agg["label_by_id"].get(cid, ""), "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
             continue
 
         _upsert_bom_line(harness_part, part, agg["quantity"])
