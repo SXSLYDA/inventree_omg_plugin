@@ -109,86 +109,6 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "validator": bool,
             "default": False,
         },
-        # --- InvenTree parameter mapping: connector-level ---
-        "OMG_CAVITY_LAYOUT_PARAM_NAME": {
-            "name": "Cavity Layout Parameter Name",
-            "description": "InvenTree part parameter name holding a connector's real, comma-separated "
-                            "cavity ID list, e.g. 'A,B,C,D,E,F,H,J,K' — set this per connector on its "
-                            "Part detail page. Skipped letters (I/O/Q etc.) just aren't listed. Used for "
-                            "an exact blanks-needed calculation instead of a count-based guess.",
-            "default": "Cavity Layout",
-        },
-        "OMG_CONTACT_COUNT_PARAM_NAME": {
-            "name": "Contact Count Parameter Name (fallback only)",
-            "description": "InvenTree part parameter name holding a connector's total cavity count. "
-                            "Only used as an APPROXIMATE blanks-needed fallback for connectors that "
-                            "don't have a Cavity Layout parameter set yet — once Cavity Layout exists "
-                            "for a connector, this is ignored for it.",
-            "default": "Contact Count",
-        },
-        "OMG_COMPONENT_TYPE_PARAM_NAME": {
-            "name": "Component Type Parameter Name",
-            "description": "InvenTree part parameter name used to tag a part as 'Blank' or 'Contact' — "
-                            "set this on the blank/contact parts themselves, then link them to the "
-                            "connector via InvenTree's native Related Parts. This is what tells the "
-                            "plugin which related part is which, since Related Parts itself has no "
-                            "role/type field.",
-            "default": "Component Type",
-        },
-        # --- InvenTree parameter mapping: conductor-level ---
-        "OMG_GAUGE_PARAM_NAME": {
-            "name": "Gauge Parameter Name",
-            "description": "InvenTree part parameter name holding a conductor's wire gauge/size — "
-                            "used as the primary filter when matching a wire with no typed part number.",
-            "default": "Gauge",
-        },
-        "OMG_INSULATION_TYPE_PARAM_NAME": {
-            "name": "Insulation Type Parameter Name",
-            "description": "InvenTree part parameter name holding a conductor's insulation type — "
-                            "used to narrow a gauge-based match, when set.",
-            "default": "Insulation Type",
-        },
-        "OMG_PRIMARY_COLOR_PARAM_NAME": {
-            "name": "Primary Color Parameter Name",
-            "description": "InvenTree part parameter name holding a conductor's primary wire color.",
-            "default": "Primary Color",
-        },
-        "OMG_SECONDARY_COLOR_PARAM_NAME": {
-            "name": "Secondary Color Parameter Name",
-            "description": "InvenTree part parameter name holding a conductor's secondary (stripe) "
-                            "wire color, for two-color wires. Leave the default if you don't use these.",
-            "default": "Secondary Color",
-        },
-        # --- Per-pin contact selection, when a connector has more than one
-        # contact variant (different gauge ranges, different plating) ---
-        "OMG_CONTACT_MIN_GAUGE_PARAM_NAME": {
-            "name": "Contact Min Gauge Parameter Name",
-            "description": "InvenTree part parameter name (on a CONTACT part, not the connector) "
-                            "holding the minimum wire gauge that contact accepts. Only consulted when "
-                            "a connector has more than one Contact-tagged Related Part — a single "
-                            "contact type per connector doesn't need this set at all.",
-            "default": "Min Gauge",
-        },
-        "OMG_CONTACT_MAX_GAUGE_PARAM_NAME": {
-            "name": "Contact Max Gauge Parameter Name",
-            "description": "InvenTree part parameter name (on a CONTACT part, not the connector) "
-                            "holding the maximum wire gauge that contact accepts. Same conditions as "
-                            "Contact Min Gauge above — only relevant when a connector has more than "
-                            "one Contact-tagged Related Part.",
-            "default": "Max Gauge",
-        },
-        # --- Harness import behavior ---
-        "OMG_HARNESS_MARKER_PARAM_NAME": {
-            "name": "OMG Harness Marker Parameter Name",
-            "description": "InvenTree part parameter name used to mark a part as an OMG-managed "
-                            "harness — set to 'true' automatically the first time this part is linked "
-                            "or synced with OMG. The 'OMG Harness' panel shows on every assembly part "
-                            "either way, but this marker decides whether that panel shows a link-to-OMG "
-                            "search or the sync/re-import view for an already-linked harness. You can "
-                            "also set this manually on a part you created yourself in InvenTree, before "
-                            "its first sync, if you want it treated as already linked.",
-            "default": "OMG Harness",
-        },
         "AMBIGUOUS_SEARCH_LIMIT": {
             "name": "Ambiguous candidate limit",
             "description": "Max number of candidate parts to record when a component match is ambiguous.",
@@ -242,7 +162,7 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
 
         "OMG Harness" — shown on every assembly part (not gated by the
         marker parameter anymore). Panel.tsx checks
-        OMG_HARNESS_MARKER_PARAM_NAME itself and renders one of two
+        HARNESS_MARKER_PARAM itself and renders one of two
         flows: not yet linked -> search OMG and link this exact part;
         already linked -> sync/re-import its BOM. One panel with two
         states, so linking and then syncing reads as one continuous
@@ -277,15 +197,14 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         if target_model != "part" or not context.get("target_id"):
             return panels
 
-        from .inventree_native_lookup import get_part_parameter_str
+        from .inventree_native_lookup import HARNESS_MARKER_PARAM, get_part_parameter_str
 
         from part.models import Part
         part = Part.objects.filter(pk=context["target_id"]).first()
         if not part:
             return panels
 
-        marker_param = self.get_setting("OMG_HARNESS_MARKER_PARAM_NAME") or "OMG Harness"
-        is_omg_harness = (get_part_parameter_str(part, marker_param) or "").strip().lower() == "true"
+        is_omg_harness = (get_part_parameter_str(part, HARNESS_MARKER_PARAM) or "").strip().lower() == "true"
 
         # Shown for any assembly now, not just ones already linked —
         # Panel.tsx itself checks is_omg_harness (via the same part

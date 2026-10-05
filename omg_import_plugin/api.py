@@ -93,6 +93,7 @@ class ImportView(APIView):
 
 
 REVIEW_CONTEXT_TYPES = {"connector", "wire", "multicore", "accessory", "junction"}
+REVIEW_CONTEXT_CHUNK = 500  # OMG's per-request limit (ReviewContextInputSerializer max_length)
 
 
 def _fetch_review_context(user, items):
@@ -117,15 +118,20 @@ def _fetch_review_context(user, items):
     omg_base_url, omg_token = get_omg_credentials(user, plugin=plugin)
     if not omg_base_url or not omg_token:
         return {}, "OMG credentials aren't configured, so OMG details can't be shown."
+    # OMG accepts up to 500 items per request - send in chunks, and skip
+    # duplicates (the same OMG object flagged more than once).
+    unique = list({(w["omg_object_type"], w["omg_object_id"]): w for w in wanted}.values())
+    rows = []
     try:
-        resp = requests.post(
-            f"{omg_base_url.rstrip('/')}/api/inventree/review-context/",
-            json={"items": wanted},
-            headers={"Authorization": f"Token {omg_token}"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        rows = resp.json().get("items", [])
+        for start in range(0, len(unique), REVIEW_CONTEXT_CHUNK):
+            resp = requests.post(
+                f"{omg_base_url.rstrip('/')}/api/inventree/review-context/",
+                json={"items": unique[start:start + REVIEW_CONTEXT_CHUNK]},
+                headers={"Authorization": f"Token {omg_token}"},
+                timeout=10,
+            )
+            resp.raise_for_status()
+            rows.extend(resp.json().get("items", []))
     except (requests.RequestException, ValueError) as exc:
         return {}, f"Couldn't load details from OMG: {exc}"
     return {(r["omg_object_type"], r["omg_object_id"]): r for r in rows if r.get("found")}, None
@@ -251,7 +257,7 @@ class LatestBatchForPartView(APIView):
     GET /plugin/omg-harness-import/batches/latest/?part_pk=123
 
     Backs the "OMG Harness" panel — reports both whether this part is
-    linked to OMG at all (the same OMG_HARNESS_MARKER_PARAM_NAME check
+    linked to OMG at all (the same HARNESS_MARKER_PARAM check
     core.py's get_ui_panels uses to decide whether to show this panel
     in the first place — checked again here, server-side, rather than
     trusting the frontend to re-derive it, since the frontend has no
@@ -276,11 +282,8 @@ class LatestBatchForPartView(APIView):
         if not part:
             return Response({"detail": f"No part found with pk {part_pk}."}, status=status.HTTP_404_NOT_FOUND)
 
-        from plugin.registry import registry
-        plugin = registry.get_plugin("omg-harness-import")
-        marker_param = plugin.get_setting("OMG_HARNESS_MARKER_PARAM_NAME") if plugin else None
-        marker_param = marker_param or "OMG Harness"
-        is_linked = (get_part_parameter_str(part, marker_param) or "").strip().lower() == "true"
+        from .inventree_native_lookup import HARNESS_MARKER_PARAM
+        is_linked = (get_part_parameter_str(part, HARNESS_MARKER_PARAM) or "").strip().lower() == "true"
 
         batch = ImportBatch.objects.filter(root_part_id=part_pk).order_by("-created_at").first()
         return Response({
@@ -470,21 +473,12 @@ class HarnessImportView(APIView):
         except requests.RequestException as exc:
             return Response({"detail": f"Could not reach OMG Harness to fetch BOM data: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
 
-        # Plugin instance settings (contact-count fallback param name,
-        # harness marker) — plugin already fetched above for credentials.
-        # Blanks-needed and contacts-consumed now come from native
-        # InvenTree Part Parameters + Related Parts (see
-        # inventree_native_lookup.py) — contact_count_param below is only
-        # the approximate fallback for connectors with no Cavity Layout
-        # parameter set yet.
-        contact_count_param = plugin.get_setting("OMG_CONTACT_COUNT_PARAM_NAME") if plugin else None
-        harness_marker_param = plugin.get_setting("OMG_HARNESS_MARKER_PARAM_NAME") if plugin else None
-
+        # Contacts, blanks and the parameter names all come from OMG with the
+        # payload (part_logic / parameter_names) - no plugin settings for them.
         try:
             batch, resolved_matches = import_or_update_harness_bom(
-                harness_part_number, omg_bom_data, contact_count_param=contact_count_param,
-                category_pk=category_pk, harness_marker_param=harness_marker_param,
-                target_part_pk=target_part_pk,
+                harness_part_number, omg_bom_data,
+                category_pk=category_pk, target_part_pk=target_part_pk,
             )
         except ValueError as exc:
             return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)

@@ -11,30 +11,13 @@ Design decisions worth knowing about before you wire this in:
    resolving pending parts is resolve_pending.py's job (run that first,
    or this will flag every pending connector/conductor every time).
 
-2. Blanks-needed and contacts-consumed both come from InvenTree's own
-   native data (see inventree_native_lookup.py) rather than a bespoke
-   plugin table:
-     - Cavity Layout parameter -> the connector's real cavity ID list
-       (exact, handles skipped letters like I/O/Q properly)
-     - Component Type parameter on OTHER parts ("Blank" / "Contact") +
-       InvenTree's native Related Parts link -> which part is this
-       connector's blank/contact
-   Contacts-consumed only needs the "Contact" related part and the
-   actual wired pin IDs — it doesn't need the cavity layout at all,
-   since "one contact per wired cavity" is true regardless of how many
-   total cavities exist. Blanks DO need the cavity layout (to know the
-   full universe of positions), and fall back to an approximate
-   contact-count-parameter estimate (flagged as approximate) if no
-   Cavity Layout has been set for that connector yet.
-
-   A connector can have MORE THAN ONE Contact-tagged related part —
-   different gauge ranges — in which case contact selection happens per
-   wire, by that wire's actual ConductorSize, not one blanket contact
-   for the whole connector. See select_contact_for_gauge() in
-   inventree_native_lookup.py. A single Contact-tagged related part
-   (the common case) skips all of this and behaves exactly as before —
-   no gauge data needed at all unless a
-   connector genuinely has multiple contact variants to choose between.
+2. Contacts and blanks are worked out by OMG (its components/wire_ends.py:
+   each wire end's contact from the connector's related parts, by wire
+   size and cavity group, one per pin; blanks from the Cavity Layout) and
+   arrive finished in payload["part_logic"] - this file adds those BOM
+   lines and flags OMG's issues (_apply_omg_part_logic). It no longer
+   chooses contacts or blanks itself, and has no parameter-name settings:
+   OMG sends its mapping in payload["parameter_names"].
 
 3. Re-running this on a harness that's already been imported will
    update quantities on existing BomItems (via update_or_create) but
@@ -95,7 +78,6 @@ Design decisions worth knowing about before you wire this in:
 
 from collections import defaultdict
 
-from django.conf import settings
 from django.db.models import Q
 
 from part.models import Part
@@ -104,11 +86,7 @@ from . import inventree_native_lookup as native
 from .models import ImportBatch, UnresolvedImportItem
 from .resolver import _find_candidates
 
-DEFAULT_CONTACT_COUNT_PARAM = getattr(settings, "OMG_CONTACT_COUNT_PARAM_NAME", "Contact Count")
-DEFAULT_HARNESS_MARKER_PARAM = getattr(settings, "OMG_HARNESS_MARKER_PARAM_NAME", "OMG Harness")
-
-
-def _mark_as_omg_harness(part, marker_param=None):
+def _mark_as_omg_harness(part):
     """
     Sets the OMG-harness marker parameter to "true" on a part — this is
     what core.py's get_ui_panels() actually checks before showing the
@@ -118,13 +96,10 @@ def _mark_as_omg_harness(part, marker_param=None):
     synced (idempotent — safe to call repeatedly, just ensures the
     parameter exists and is set).
     """
-    from part.models import PartParameter, PartParameterTemplate
-
-    marker_param = marker_param or DEFAULT_HARNESS_MARKER_PARAM
-    template, _ = PartParameterTemplate.objects.get_or_create(
-        name=marker_param, defaults={"description": "Set by the OMG Harness Import plugin — marks a part as an OMG-managed harness."},
+    native.set_part_parameter(
+        part, native.HARNESS_MARKER_PARAM, "true",
+        description="Set by the OMG Harness Import plugin — marks a part as an OMG-managed harness.",
     )
-    PartParameter.objects.update_or_create(part=part, template=template, defaults={"data": "true"})
 
 NOT_IN_INVENTREE_MESSAGE = (
     "'{part_no}' isn't in InvenTree. Create it via Parts -> Add Parts -> "
@@ -187,14 +162,6 @@ def _sync_harness_identity(batch, harness_part, harness_part_number, harness_des
                    f"Most likely another InvenTree part already uses that name - rename or merge it, "
                    f"then re-run the sync."),
         )
-
-
-def _get_contact_count_param(part, param_name):
-    raw = native.get_part_parameter_str(part, param_name)
-    try:
-        return int(float(raw)) if raw is not None else None
-    except (TypeError, ValueError):
-        return None
 
 
 def _flag_connector(batch, connector_id, label, message, candidate_pks=None):
@@ -290,110 +257,38 @@ def _labels_text(labels, limit=12):
     return ", ".join(unique)
 
 
-def _cavity_bom_additions(batch, part, agg, contact_count_param):
+def _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks):
     """
-    Returns a list of (sub_part, quantity) tuples to add to the BOM for
-    this connector part — contacts consumed, and blanks needed, in that
-    order. Anything that can't be resolved gets flagged instead of
-    guessed at; this function never invents a part reference.
-
-    Contact selection: a connector can have MULTIPLE Contact-tagged
-    related parts (different gauge ranges), not just one. Each wire's
-    own gauge determines which variant it needs — this isn't guessed,
-    it's read from that specific wire's ConductorSize
-    (see agg["pin_specs"], populated by OMG's get_pin_wire_specs()).
-    Falls back to the old single-contact-part behavior automatically
-    when a connector only has one Contact-tagged related part — no
-    gauge matching needed or attempted in that common case.
+    Add OMG's worked-out contact and blank lines to the BOM, and flag what
+    OMG couldn't resolve. OMG chose every contact (by wire size, cavity
+    group, one per pin) and totalled each across the whole harness, so
+    nothing is decided here - just applied. Each part gets ONE line with
+    the harness-wide total (adding per connector part used to overwrite a
+    shared contact's count with the last connector's).
     """
-    additions = []
-
-    contact_candidates = native.get_related_parts_by_type(part, "Contact")
-    total_used = sum(len(instance_pins) for instance_pins in agg["instances"])
-
-    if len(contact_candidates) == 1:
-        # Common case: one contact type fits every pin on this connector — no
-        # gauge matching needed, this is just the original simple behavior.
-        if total_used > 0:
-            additions.append((contact_candidates[0], total_used))
-    elif len(contact_candidates) > 1:
-        # Multiple variants exist — resolve per pin, by that wire's actual gauge.
-        contact_qty = defaultdict(int)
-        for pin in agg["pin_specs"]:
-            gauge = pin.get("conductor_size")
-            shared = len(pin.get("wire_ids") or [pin.get("wire_id")]) > 1
-            if gauge is None:
-                _flag_wire(batch, pin["wire_id"],
-                           (f"A wire sharing pin {pin.get('pin_id')} has no gauge set yet" if shared
-                            else "This wire has no gauge set yet") +
-                           ", and its connector has multiple contact variants — can't tell which contact it needs.",
-                           wire_no=pin.get("wire_no"))
+    for kind in ("contacts", "blanks"):
+        for line in part_logic.get(kind, []):
+            sub_part = Part.objects.filter(pk=line.get("inventree_pk")).first()
+            if sub_part is None:
+                where = ", ".join(line.get("connectors") or []) or "this harness"
+                UnresolvedImportItem.objects.create(
+                    batch=batch, part_number=line.get("name") or f"InvenTree part {line.get('inventree_pk')}", quantity=0,
+                    reason=UnresolvedImportItem.Reason.NOT_FOUND,
+                    notes=(f"OMG chose this part (InvenTree pk {line.get('inventree_pk')}) as a {kind[:-1]} for "
+                           f"{where}, but it no longer exists in InvenTree - was it deleted?"),
+                )
                 continue
-            contact_part, status = native.select_contact_for_gauge(
-                contact_candidates, gauge,
-            )
-            if status == "found":
-                contact_qty[contact_part.pk] += 1
-            elif status == "ambiguous":
-                _flag_wire(batch, pin["wire_id"],
-                           f"This wire's gauge ({gauge}) matches more than one contact variant on "
-                           f"{part.name or part.IPN} — narrow their Min/Max Gauge parameters so they don't overlap, "
-                           f"or remove the extra Related Part.",
-                           wire_no=pin.get("wire_no"))
-            else:
-                _flag_wire(batch, pin["wire_id"],
-                           (f"No contact variant on {part.name or part.IPN} covers the combined gauge ({gauge}) of the "
-                            f"{len(pin['wire_ids'])} wires sharing pin {pin.get('pin_id')} — add one, or fix its Min/Max "
-                            f"Gauge parameters." if shared else
-                            f"No contact variant on {part.name or part.IPN} covers this wire's gauge ({gauge}) — "
-                            f"add one, or fix its Min/Max Gauge parameters."),
-                           wire_no=pin.get("wire_no"))
-        for pk, qty in contact_qty.items():
-            from part.models import Part as _Part
-            additions.append((_Part.objects.get(pk=pk), qty))
-    elif total_used > 0:
-        _flag_connector_part_issue(
-            batch, part,
-            f"{total_used} contact(s) consumed by {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) but no related part is "
-            f"tagged Component Type = Contact for it yet — add a Related Part and set its type.",
-        )
+            _upsert_bom_line(harness_part, sub_part, line.get("quantity", 0))
+            seen_sub_part_pks.add(sub_part.pk)
 
-    valid_cavities = native.get_valid_cavities(part)
-    if valid_cavities is not None:
-        missing = sum(len(set(valid_cavities) - instance_pins) for instance_pins in agg["instances"])
-        if missing > 0:
-            blank_part, status = native.get_related_part_by_type(part, "Blank")
-            if status == "found":
-                additions.append((blank_part, missing))
-            elif status == "ambiguous":
-                _flag_connector_part_issue(
-                    batch, part,
-                    f"{part.name or part.IPN} has more than one related part tagged Component Type = Blank — "
-                    f"can't tell which one to use.",
-                )
-            else:
-                _flag_connector_part_issue(
-                    batch, part,
-                    f"{missing} blank(s) needed for {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) but no related part is "
-                    f"tagged Component Type = Blank for it yet.",
-                )
-    else:
-        contact_count = _get_contact_count_param(part, contact_count_param)
-        if contact_count is not None:
-            approx_missing = sum(max(0, contact_count - len(instance_pins)) for instance_pins in agg["instances"])
-            if approx_missing > 0:
-                _flag_connector_part_issue(
-                    batch, part,
-                    f"~{approx_missing} blank(s) estimated for {part.name or part.IPN} ({_labels_text(agg['pin_labels'])}) from the "
-                    f"'{contact_count_param}' parameter — APPROXIMATE, can be wrong if this connector's "
-                    f"cavity lettering skips positions. Set a '{native.DEFAULT_CAVITY_LAYOUT_PARAM}' "
-                    f"parameter on {part.name or part.IPN} for an exact count.",
-                )
-
-    return additions
+    for issue in part_logic.get("issues", []):
+        if issue.get("object_type") == "wire":
+            _flag_wire(batch, issue.get("object_id"), issue.get("message", ""), wire_no=issue.get("wire_no"))
+        else:
+            _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), issue.get("message", ""))
 
 
-def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_count_param=None, category_pk=None, harness_marker_param=None, target_part_pk=None):
+def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=None, target_part_pk=None):
     """
     harness_part_number: the harness's IPN in InvenTree.
     omg_bom_data: the payload from OMG's HarnessBomExportView — includes
@@ -402,9 +297,6 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
                   row's typed part number (connector_part_no /
                   conductor_part_no) alongside any already-resolved
                   inventree_pk.
-    contact_count_param: InvenTree parameter name used ONLY as the
-                          blanks fallback when no Cavity Layout parameter
-                          is set. Defaults to OMG_CONTACT_COUNT_PARAM_NAME.
     category_pk: optional InvenTree category to create the harness part
                  in, if it doesn't exist yet. Left uncategorized if omitted.
     target_part_pk: optional — when given, use THIS EXACT existing part
@@ -436,8 +328,6 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
     unique-parametric match only — nothing created, nothing ambiguous),
     meant to be passed straight to reconciliation.push_reconciliation_to_omg().
     """
-    contact_count_param = contact_count_param or DEFAULT_CONTACT_COUNT_PARAM
-
     created = False
     linked_pk = omg_bom_data.get("harness_inventree_pk")
     if target_part_pk:
@@ -472,7 +362,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
             )
             created = True
 
-    _mark_as_omg_harness(harness_part, marker_param=harness_marker_param)
+    _mark_as_omg_harness(harness_part)
 
     batch = ImportBatch.objects.create(root_part_number=harness_part_number, root_part=harness_part)
 
@@ -555,6 +445,10 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
             if used_pins:
                 connector_agg[pk]["pin_labels"].append(c.get("label", ""))
 
+    # Contacts and blanks worked out by OMG (its components/wire_ends.py):
+    # finished BOM lines plus plain-words issues. None from an older OMG.
+    part_logic = omg_bom_data.get("part_logic")
+
     for pk, agg in connector_agg.items():
         try:
             part = Part.objects.get(pk=pk)
@@ -566,9 +460,17 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
         _upsert_bom_line(harness_part, part, agg["quantity"])
         seen_sub_part_pks.add(pk)
 
-        for sub_part, quantity in _cavity_bom_additions(batch, part, agg, contact_count_param):
-            _upsert_bom_line(harness_part, sub_part, quantity)
-            seen_sub_part_pks.add(sub_part.pk)
+    if part_logic is not None:
+        _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks)
+    elif connector_agg:
+        # OMG chooses contacts and blanks (its components/wire_ends.py); the
+        # plugin no longer guesses them itself. Without them, say why.
+        UnresolvedImportItem.objects.create(
+            batch=batch, part_number=harness_part.name or harness_part.IPN or str(harness_part.pk), quantity=0,
+            reason=UnresolvedImportItem.Reason.NOT_FOUND,
+            notes=("OMG didn't send its worked-out contacts and blanks, so none were added to this BOM. "
+                   "Update OMG to the version with wire ends (components/wire_ends.py), then re-sync."),
+        )
 
     conductor_agg = defaultdict(lambda: {"length_m": 0.0, "wire_ids": [], "wire_no_by_id": {}})
 
@@ -600,6 +502,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, contact_coun
             if resolved_pk is None and candidate_pks is None and size is not None:
                 param_candidates = native.find_conductor_candidates_native(
                     size=size, conductor_type=conductor_type, primary_color=primary, secondary_color=secondary,
+                    parameter_names=omg_bom_data.get("parameter_names"),
                 )
                 if len(param_candidates) == 1:
                     resolved_pk = param_candidates[0]
