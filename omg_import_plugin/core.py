@@ -111,7 +111,8 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         },
         "AMBIGUOUS_SEARCH_LIMIT": {
             "name": "Ambiguous candidate limit",
-            "description": "Max number of candidate parts to record when a component match is ambiguous.",
+            "description": "When a part number matches several InvenTree parts (by name/IPN containing it), "
+                           "the most candidates to list on its 'ambiguous' review item for you to pick from (1-100).",
             "default": 10,
             "validator": int,
         },

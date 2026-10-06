@@ -51,7 +51,25 @@ def _find_candidates(part_number):
     exact = list(Part.objects.filter(Q(name__iexact=part_number) | Q(IPN__iexact=part_number)))
     if exact:
         return exact
-    return list(Part.objects.filter(Q(IPN__icontains=part_number) | Q(name__icontains=part_number)))[:10]
+    # Limited IN THE DATABASE (it used to load every match, then keep 10),
+    # in a stable order, to the plugin's "Ambiguous candidate limit" setting
+    # (which used to be ignored - 10 was hard-coded here).
+    loose = Part.objects.filter(Q(IPN__icontains=part_number) | Q(name__icontains=part_number)).order_by('name', 'pk')
+    return list(loose[:_ambiguous_limit()])
+
+
+DEFAULT_AMBIGUOUS_LIMIT = 10
+
+
+def _ambiguous_limit():
+    """The plugin's AMBIGUOUS_SEARCH_LIMIT setting (1-100), or 10 if unset/unreadable."""
+    try:
+        from plugin.registry import registry
+        plugin = registry.get_plugin("omg-harness-import")
+        value = int(plugin.get_setting("AMBIGUOUS_SEARCH_LIMIT")) if plugin else DEFAULT_AMBIGUOUS_LIMIT
+    except Exception:
+        return DEFAULT_AMBIGUOUS_LIMIT
+    return max(1, min(value, 100))
 
 
 def _find_root_part(root_part_number):
