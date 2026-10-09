@@ -12,8 +12,10 @@ Backend for the two part panels (PartSetupPanel.tsx):
                     series offered to add.
 
 What a type needs, the template names, AWG table and colour list all come
-from OMG (/api/parts/part-profiles/) - OMG owns the part logic; this only
-reads and writes InvenTree parameters and related parts. Templates are never
+from OMG (/api/parts/part-profiles/), and the Cavity Map is read and written
+by OMG's own rules (/api/parts/rules/) - OMG owns the part logic, so there is
+no copy here to drift; this only reads and writes InvenTree parameters and
+related parts. Templates are never
 created here: a missing one is reported (OMG's InvenTree Settings page can
 create them).
 """
@@ -29,7 +31,6 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from . import omg_cavity_map as cmap
 from .gauge_autofill import awg_for_mm2, mm2_for_awg, normalise_awg
 from .inventree_native_lookup import (_part_content_type, get_part_parameter_str, parameter_template,
                                       part_parameter_lookup)
@@ -61,6 +62,35 @@ def omg_part_config(plugin, force=False):
         return None, f"Couldn't read OMG's part setup ({exc}) - update OMG, or check the URL/token."
     _config_cache.update(at=time.time(), data=data)
     return data, None
+
+
+def omg_call(method, path, payload=None, params=None, timeout=20):
+    """
+    (data, error) - one request to OMG's API with this plugin's URL/token
+    (e.g. omg_call("post", "/api/parts/rules/", {...})). error is a plain
+    message, never an exception.
+    """
+    plugin = _plugin()
+    base_url = plugin.get_setting("OMG_HARNESS_API_URL") if plugin else None
+    token = plugin.get_setting("OMG_HARNESS_API_TOKEN") if plugin else None
+    if not base_url or not token:
+        return None, "Set the OMG Harness API URL and token in this plugin's settings first."
+    try:
+        resp = requests.request(method, f"{base_url.rstrip('/')}{path}", json=payload, params=params or {},
+                                headers={"Authorization": f"Token {token}"}, timeout=timeout)
+        data = resp.json() if resp.content else {}
+    except (requests.RequestException, ValueError) as exc:
+        return None, f"Couldn't reach OMG ({exc}) - update OMG, or check the URL/token."
+    if resp.status_code == 404:
+        return None, "OMG doesn't have this yet - update OMG to the version with accessories."
+    if resp.status_code >= 400:
+        return None, (data.get("detail") if isinstance(data, dict) else None) or f"OMG returned {resp.status_code}."
+    return data, None
+
+
+def omg_rules(**asks):
+    """(answers, error) from OMG's /api/parts/rules/ - see that view for what can be asked."""
+    return omg_call("post", "/api/parts/rules/", asks)
 
 
 def _plugin():
@@ -245,92 +275,86 @@ def _part_info(part, config):
 
 
 def _parts_of_series(config, series_list):
-    """{norm series: [part info]} - every InvenTree part whose Contact Series is one of these."""
+    """
+    ({series key: [part info]}, {series as written: key}, error) - every
+    InvenTree part whose Contact Series is one of these, compared OMG's way
+    (one call: OMG's norm_series for the wanted series and every Contact
+    Series in use). The panel matches by these keys - it has no rule of
+    its own.
+    """
     from part.models import Part
     from common.models import Parameter
     name = _role_template(config, "part.contact_series")
-    wanted = {cmap.norm_series(s) for s in series_list if s}
-    if not name or not wanted:
-        return {}
-    pairs = (Parameter.objects.filter(template__name__iexact=name, model_type=_part_content_type())
-             .values_list("model_id", "data"))
+    wanted_raw = [s for s in series_list if s]
+    if not name or not wanted_raw:
+        return {}, {}, None
+    pairs = list(Parameter.objects.filter(template__name__iexact=name, model_type=_part_content_type())
+                 .values_list("model_id", "data"))
+    answers, error = omg_rules(norm_series=sorted({str(v) for v in wanted_raw} | {str(d) for _pk, d in pairs}))
+    if error:
+        return {}, {}, error
+    keys = answers.get("norm_series") or {}
+    wanted = {keys.get(str(s)) for s in wanted_raw} - {None, ""}
     pks_by_series = {}
     for pk, data in pairs:
-        key = cmap.norm_series(data)
+        key = keys.get(str(data))
         if key in wanted:
             pks_by_series.setdefault(key, []).append(pk)
     result = {}
     parts = {p.pk: p for p in Part.objects.filter(pk__in=[pk for pks in pks_by_series.values() for pk in pks],
                                                  active=True)}
     for key, pks in pks_by_series.items():
-        result[key] = [_part_info(parts[pk], config) for pk in pks if pk in parts]
-    return result
+        result[key] = [{**_part_info(parts[pk], config), "series_key": key} for pk in pks if pk in parts]
+    return result, keys, None
 
 
-def cavity_state(part, config):
-    """Everything the Cavity panel shows for one connector."""
+def cavity_state(part, config, extra_series=None):
+    """(everything the Cavity panel shows for one connector, error) - the map parsed by OMG."""
     map_name = _role_template(config, "connector.cavity_map")
     raw = (get_part_parameter_str(part, map_name) if map_name else None) or ""
     groups_name = _role_template(config, "connector.cavity_groups")
-    from_groups = False
-    ranges = cmap.parse_cavity_map(raw)
-    if not raw and groups_name:
-        old = get_part_parameter_str(part, groups_name) or ""
-        if old:
-            ranges, from_groups = cmap.parse_cavity_groups_as_map(old), True
+    old = (get_part_parameter_str(part, groups_name) if (groups_name and not raw) else None) or ""
+    answers, error = omg_rules(parse_cavity_map=raw, **({"parse_cavity_groups": old} if old else {}))
+    if error:
+        return None, error
+    rows, from_groups = answers.get("cavity_map") or [], False
+    if not raw and old:
+        rows, from_groups = answers.get("cavity_groups") or [], True
     related = [_part_info(p, config) for p in _related_parts(part)]
-    series = [r.series for r in ranges if r.series]
+    series = [r["series"] for r in rows if r.get("series")] + list(extra_series or [])
+    by_series, series_keys, error = _parts_of_series(config, series)
+    if error:
+        return None, error
+    related_keys = {p["series"] for p in related if p["series"]} - set(series_keys)
+    if related_keys:
+        answers2, error = omg_rules(norm_series=sorted(related_keys))
+        if error:
+            return None, error
+        series_keys.update(answers2.get("norm_series") or {})
+    for p in related:
+        p["series_key"] = series_keys.get(p["series"], "")
     return {
         "part": {"pk": part.pk, "name": part.name, "ipn": part.IPN or ""},
         "map_template": map_name,
         "map_template_exists": bool(map_name and _template(map_name)),
         "raw": raw,
         "from_cavity_groups": from_groups,
-        "rows": [{"cavities": ", ".join(r.tokens), "series": r.series, "sealing": r.sealing,
-                  "max_od": r.max_od, "problems": r.problems} for r in ranges],
+        "rows": [{k: r.get(k) for k in ("cavities", "series", "sealing", "max_od", "problems")} for r in rows],
         "related": related,
-        "by_series": _parts_of_series(config, series),
-        "sealings": list(cmap.SEALINGS),
-    }
-
-
-def format_cavity_map(rows):
-    """[{cavities, series, sealing, max_od}] -> Cavity Map text; (text, errors)."""
-    entries, errors = [], []
-    for i, row in enumerate(rows or [], start=1):
-        cavities = ", ".join(t.strip() for t in str(row.get("cavities") or "").split(",") if t.strip())
-        series = str(row.get("series") or "").strip()
-        if not cavities and not series:
-            continue
-        if not cavities or not series:
-            errors.append(f"Row {i}: give both the cavities and the series.")
-            continue
-        if "/" in series or ";" in series or ":" in series:
-            errors.append(f"Row {i}: the series can't contain / ; or :")
-            continue
-        sealing = str(row.get("sealing") or cmap.SEALING_NONE).lower()
-        if sealing not in cmap.SEALINGS:
-            errors.append(f"Row {i}: sealing must be individual, mat or none.")
-            continue
-        parts = [series, sealing]
-        if row.get("max_od") not in (None, ""):
-            try:
-                od = float(str(row["max_od"]).replace(",", "."))
-                if od <= 0:
-                    raise ValueError
-                parts.append(f"maxod {od:g}")
-            except ValueError:
-                errors.append(f"Row {i}: max OD must be a positive number (mm).")
-                continue
-        entries.append(f"{cavities}: " + " / ".join(parts))
-    return "; ".join(entries), errors
+        "by_series": by_series,
+        "series_keys": {k: v for k, v in series_keys.items() if k in set(series)},
+        "sealings": answers.get("sealings") or [],
+    }, None
 
 
 def save_cavities(part, config, rows, related_add, related_remove):
     """Write the Cavity Map parameter and add / remove related parts. Returns errors (list)."""
     from django.core.exceptions import ValidationError
     from part.models import Part, PartRelated
-    text, errors = format_cavity_map(rows)
+    answers, error = omg_rules(format_cavity_map=rows or [])
+    if error:
+        return [error]
+    text, errors = answers["formatted"]["text"], answers["formatted"]["errors"]
     if errors:
         return errors
     template = _template(_role_template(config, "connector.cavity_map"))
@@ -409,10 +433,11 @@ class CavitySetupView(APIView):
         config, error = omg_part_config(_plugin())
         if error:
             return Response({"error": error})
+        # the panel also asks for parts of series typed but not saved yet
         series = [s for s in request.query_params.get("series", "").split("|") if s]
-        state = cavity_state(part, config)
-        if series:   # the panel asks for parts of series typed but not saved yet
-            state["by_series"].update(_parts_of_series(config, series))
+        state, error = cavity_state(part, config, extra_series=series)
+        if error:
+            return Response({"error": error})
         return Response({"error": None, "can_edit": _can_edit(request.user), **state})
 
     def post(self, request, pk):
@@ -428,4 +453,7 @@ class CavitySetupView(APIView):
                                request.data.get("related_add") or [], request.data.get("related_remove") or [])
         if errors:
             return Response({"detail": " ".join(errors), "errors": errors}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"error": None, "can_edit": True, **cavity_state(part, config)})
+        state, error = cavity_state(part, config)
+        if error:
+            return Response({"error": error, "can_edit": True})
+        return Response({"error": None, "can_edit": True, **state})

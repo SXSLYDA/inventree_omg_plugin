@@ -168,6 +168,12 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                 return True
         return False
 
+    def _is_accessory(self, part):
+        """Component Type is an accessory kind - Lock, Secondary Lock, Boot, Cover, Backshell, Holding Plate, Hardware."""
+        from .accessory_setup import is_accessory_part
+        from .part_setup import _config_cache
+        return is_accessory_part(part, _config_cache.get("data") or {})
+
     def setup_urls(self):
         from . import api
         return api.urlpatterns
@@ -267,12 +273,23 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
                 "icon": "ti:list-check:outline",
                 "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGPartSetupPanel"),
             })
-            if self._is_connector(part):
+            is_connector = self._is_connector(part)
+            if is_connector:
                 panels.append({
                     "key": "omg-cavities",
                     "title": "OMG Cavities",
                     "icon": "ti:grid-dots:outline",
                     "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGCavityPanel"),
+                })
+            # "OMG Accessories": on a connector, which locks / boots / covers
+            # fit and which are required; on a lock, boot... which
+            # connectors it fits (accessory_setup.py).
+            if is_connector or self._is_accessory(part):
+                panels.append({
+                    "key": "omg-accessories",
+                    "title": "OMG Accessories",
+                    "icon": "ti:lock:outline",
+                    "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGAccessoryPanel"),
                 })
 
         is_omg_harness = (get_part_parameter_str(part, HARNESS_MARKER_PARAM) or "").strip().lower() == "true"

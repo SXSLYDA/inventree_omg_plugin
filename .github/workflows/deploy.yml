@@ -1,10 +1,14 @@
 name: Deploy OMG InvenTree Plugin
 
-# Runs only on pushes to main - adjust the branch name below if your
-# default branch is called something else (e.g. master).
+# Runs on pushes to this repo's branch. It said [main], but the repo's
+# only branch is master - so pushes never triggered a deploy and new
+# versions only reached InvenTree when someone updated it by hand.
+# workflow_dispatch adds a "Run workflow" button on the Actions tab, to
+# redeploy without pushing a new commit.
 on:
   push:
-    branches: [main]
+    branches: [master, main]
+  workflow_dispatch:
 
 jobs:
   deploy:

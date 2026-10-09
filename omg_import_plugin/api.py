@@ -601,6 +601,7 @@ def _worker_running():
 
 from .sales_order_export import SalesOrderPartsListExportView
 from .part_setup import CavitySetupView, PartSetupView
+from .accessory_setup import AccessorySetupView
 
 urlpatterns = [
     path("import/", ImportView.as_view(), name="omg-import"),
@@ -618,4 +619,5 @@ urlpatterns = [
     # Part Setup / Cavities panels (part_setup.py)
     path("part-setup/<int:pk>/", PartSetupView.as_view(), name="omg-part-setup"),
     path("cavity-setup/<int:pk>/", CavitySetupView.as_view(), name="omg-cavity-setup"),
+    path("accessory-setup/<int:pk>/", AccessorySetupView.as_view(), name="omg-accessory-setup"),
 ]
