@@ -7,23 +7,15 @@ ParameterTemplate, attached to a part by (model_type = Part, model_id = pk).
 Which parameter NAMES to use is no longer configured here: OMG owns the
 part-parameter mapping (OMG > InvenTree Settings > Part Parameters) and
 sends the names with each BOM payload (payload["parameter_names"], role ->
-template name). OMG also works out contacts and blanks itself
-(payload["part_logic"]), so the plugin's own contact / blank / cavity
-selection - and its parameter-name settings - are gone.
+template name). OMG also works out contacts, blanks and wire parts itself
+(payload["part_logic"], each wire's "omg_selection"), so the plugin's own
+contact / blank / cavity / wire-gauge searches - and its parameter-name
+settings - are gone.
 """
 
 # The plugin's own marker on harness parts it manages (value "true"). Fixed:
 # it's the plugin's tag, not a mapping to an existing InvenTree parameter.
 HARNESS_MARKER_PARAM = "OMG Harness"
-
-# Fallback names if a payload ever arrives without OMG's names (same as OMG's defaults).
-DEFAULT_PARAMETER_NAMES = {
-    "wire.gauge": "Gauge",
-    "wire.insulation": "Insulation Type",
-    "wire.primary_color": "Primary Color",
-    "wire.secondary_color": "Secondary Color",
-}
-
 
 def _part_content_type():
     from django.contrib.contenttypes.models import ContentType
@@ -62,28 +54,3 @@ def find_parts_by_parameter_native(template_name, value):
     from common.models import Parameter
     return set(Parameter.objects.filter(template__name__iexact=template_name, data__iexact=str(value),
                                         model_type=_part_content_type()).values_list("model_id", flat=True))
-
-
-def find_conductor_candidates_native(size=None, conductor_type=None, primary_color=None, secondary_color=None,
-                                     parameter_names=None):
-    """
-    InvenTree parts matching a wire by its parameters: gauge first, then
-    narrowed by insulation type and colours - each narrowing only kept if it
-    doesn't empty the list. parameter_names: OMG's role -> template name
-    mapping (payload["parameter_names"]).
-    """
-    if size is None:
-        return []
-    names = {**DEFAULT_PARAMETER_NAMES, **(parameter_names or {})}
-
-    candidates = find_parts_by_parameter_native(names["wire.gauge"], size)
-    if not candidates:
-        return []
-    for role, value in (("wire.insulation", conductor_type), ("wire.primary_color", primary_color),
-                        ("wire.secondary_color", secondary_color)):
-        if not value:
-            continue
-        narrowed = candidates & find_parts_by_parameter_native(names[role], value)
-        if narrowed:
-            candidates = narrowed
-    return sorted(candidates)

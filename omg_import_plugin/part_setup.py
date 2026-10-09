@@ -261,9 +261,7 @@ def _related_parts(part):
 def _part_info(part, config):
     type_name = _role_template(config, "part.component_type")
     series_name = _role_template(config, "part.contact_series")
-    size_name = _role_template(config, "contact.size")
-    series = (get_part_parameter_str(part, series_name) if series_name else None) or \
-             (get_part_parameter_str(part, size_name) if size_name else None) or ""
+    series = (get_part_parameter_str(part, series_name) if series_name else None) or ""
     info = {"pk": part.pk, "name": part.name, "ipn": part.IPN or "", "description": part.description or "",
             "component_type": (get_part_parameter_str(part, type_name) if type_name else None) or "",
             "series": series}
@@ -312,14 +310,10 @@ def cavity_state(part, config, extra_series=None):
     """(everything the Cavity panel shows for one connector, error) - the map parsed by OMG."""
     map_name = _role_template(config, "connector.cavity_map")
     raw = (get_part_parameter_str(part, map_name) if map_name else None) or ""
-    groups_name = _role_template(config, "connector.cavity_groups")
-    old = (get_part_parameter_str(part, groups_name) if (groups_name and not raw) else None) or ""
-    answers, error = omg_rules(parse_cavity_map=raw, **({"parse_cavity_groups": old} if old else {}))
+    answers, error = omg_rules(parse_cavity_map=raw)
     if error:
         return None, error
-    rows, from_groups = answers.get("cavity_map") or [], False
-    if not raw and old:
-        rows, from_groups = answers.get("cavity_groups") or [], True
+    rows = answers.get("cavity_map") or []
     related = [_part_info(p, config) for p in _related_parts(part)]
     series = [r["series"] for r in rows if r.get("series")] + list(extra_series or [])
     by_series, series_keys, error = _parts_of_series(config, series)
@@ -338,7 +332,6 @@ def cavity_state(part, config, extra_series=None):
         "map_template": map_name,
         "map_template_exists": bool(map_name and _template(map_name)),
         "raw": raw,
-        "from_cavity_groups": from_groups,
         "rows": [{k: r.get(k) for k in ("cavities", "series", "sealing", "max_od", "problems")} for r in rows],
         "related": related,
         "by_series": by_series,

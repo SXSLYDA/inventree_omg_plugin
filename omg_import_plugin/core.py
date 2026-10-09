@@ -162,11 +162,8 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         type_name = (roles.get("part.component_type") or {}).get("template") or "Component Type"
         if (get_part_parameter_str(part, type_name) or "").strip().lower() == "connector":
             return True
-        for role, default in (("connector.cavity_map", "Cavity Map"), ("connector.cavity_groups", "Cavity Groups")):
-            name = (roles.get(role) or {}).get("template") or default
-            if get_part_parameter_str(part, name):
-                return True
-        return False
+        map_name = (roles.get("connector.cavity_map") or {}).get("template") or "Cavity Map"
+        return bool(get_part_parameter_str(part, map_name))
 
     def _is_accessory(self, part):
         """Component Type is an accessory kind - Lock, Secondary Lock, Boot, Cover, Backshell, Holding Plate, Hardware."""
@@ -265,7 +262,7 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         # contacts, seals, blanks): pick a Component Type, fill in what it
         # needs. "OMG Cavities" on connectors - Component Type is read from
         # the part with OMG's template name (cached; falls back to showing
-        # it whenever the part has a Cavity Map / Cavity Groups parameter).
+        # it whenever the part has a Cavity Map parameter).
         if not part.assembly:
             panels.append({
                 "key": "omg-part-setup",

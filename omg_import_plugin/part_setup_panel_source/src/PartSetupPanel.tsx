@@ -1,13 +1,15 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Checkbox, Group, Loader, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Badge, Button, Checkbox, Group, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
-// Two panels on a part's page (backend: part_setup.py):
-//   OMG Part Setup - pick a Component Type, fill in every parameter it needs
-//   OMG Cavities   - a connector's Cavity Map as a grid + its related
-//                    contacts / seals / blanks by series
+// Three panels on a part's page (backend: part_setup.py, accessory_setup.py):
+//   OMG Part Setup  - pick a Component Type, fill in every parameter it needs
+//   OMG Cavities    - a connector's Cavity Map as a grid + its related
+//                     contacts / seals / blanks by series
+//   OMG Accessories - on a connector: which locks / boots / covers fit and
+//                     which are required; on an accessory: what it fits
 // What each type needs, template names, AWG sizes and colours come from OMG.
 
 const PLUGIN = '/plugin/omg-harness-import';
@@ -213,14 +215,13 @@ interface CavityState {
     map_template: string;
     map_template_exists: boolean;
     raw: string;
-    from_cavity_groups: boolean;
     rows: { cavities: string; series: string; sealing: string; max_od: number | null; problems: string[] }[];
     related: PartInfo[];
     by_series: Record<string, PartInfo[]>;
+    series_keys: Record<string, string>;    // series as written -> OMG's comparison key
     sealings: string[];
 }
 
-const normSeries = (s: string) => (s || '').replace(/[^0-9A-Za-z]+/g, '').toUpperCase();
 const TYPES = ['Contact', 'Seal', 'Blank'];
 
 function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
@@ -229,6 +230,11 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const [rows, setRows] = useState<CavityRow[]>([]);
     const [related, setRelated] = useState<Set<number>>(new Set());
     const [bySeries, setBySeries] = useState<Record<string, PartInfo[]>>({});
+    // OMG decides how series compare ("DT-16" = "dt 16"); a series typed
+    // but not looked up yet only matches itself exactly until "Find parts".
+    const [seriesKeys, setSeriesKeys] = useState<Record<string, string>>({});
+    const keyOf = useCallback((series: string) => seriesKeys[(series || '').trim()] ?? `raw:${(series || '').trim()}`,
+        [seriesKeys]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
 
@@ -238,6 +244,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             max_od: r.max_od == null ? '' : String(r.max_od), problems: r.problems })));
         setRelated(new Set((data.related || []).map((p) => p.pk)));
         setBySeries(data.by_series || {});
+        setSeriesKeys(data.series_keys || {});
     }, []);
 
     const load = useCallback(async () => {
@@ -263,6 +270,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`,
                 { params: { series: series.join('|') } });
             setBySeries(response.data.by_series || {});
+            setSeriesKeys((old) => ({ ...old, ...(response.data.series_keys || {}) }));
         } catch (error: any) {
             notifications.show({ color: 'red', title: 'OMG Cavities', message: apiError(error, 'Look-up failed.') });
         }
@@ -316,7 +324,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
 
     const seriesList = [...new Set(rows.map((r) => r.series.trim()).filter(Boolean))];
     const relatedOfSeries = (series: string, type: string) => Object.values(relatedParts).filter((p) =>
-        related.has(p.pk) && normSeries(p.series) === normSeries(series)
+        related.has(p.pk) && (p.series_key || `raw:${p.series}`) === keyOf(series)
         && (p.component_type || '').toLowerCase() === type.toLowerCase());
 
     return (
@@ -330,9 +338,6 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             {!state.map_template_exists && (
                 <Alert color="red">No '{state.map_template}' parameter template in InvenTree yet - create it
                     (OMG &gt; InvenTree Settings &gt; Part Parameters can) before saving.</Alert>
-            )}
-            {state.from_cavity_groups && (
-                <Alert color="blue">Loaded from the older Cavity Groups parameter - saving writes a Cavity Map.</Alert>
             )}
             <Table withTableBorder>
                 <Table.Thead>
@@ -381,7 +386,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             <Text size="xs" c="dimmed">Cavity Map: {preview || '(empty)'}</Text>
 
             {seriesList.map((series) => {
-                const parts = (bySeries[normSeries(series)] || []).filter((p) =>
+                const parts = (bySeries[keyOf(series)] || []).filter((p) =>
                     TYPES.map((t) => t.toLowerCase()).includes((p.component_type || '').toLowerCase()));
                 return (
                     <Stack key={series} gap={4}>
@@ -403,6 +408,222 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             </Group>
         </Stack>
     );
+}
+
+// ==================== Accessories ====================
+
+interface AccessoryPart {
+    pk: number;
+    name: string;
+    ipn: string;
+    description: string;
+    type: string;
+    series: string;
+    side: string;
+    ways: string;
+    exit: string;
+}
+
+interface KindRow {
+    kind: string;
+    required: boolean;
+    quantity: number;
+    status: string;
+    default: number | null;
+    options: AccessoryPart[];
+    preferred: number[];
+}
+
+interface AccessoryState {
+    error: string | null;
+    can_edit: boolean;
+    part: { pk: number; name: string; ipn: string };
+    component_type: string;
+    accessory_types: string[];
+    missing_templates: string[];
+    mode: 'connector' | 'accessory';
+    // connector
+    connector?: string;
+    spec?: { series: string; side: string; ways: string; required: string; preferred: string };
+    kinds?: KindRow[];
+    problems?: string[];
+    // accessory
+    fits?: { series: string; side: string; ways: string } | null;
+    connectors?: { pk: number; name: string; description: string; connector: string; required: boolean; preferred: boolean }[];
+}
+
+const accessoryLabel = (p: AccessoryPart) =>
+    `${p.name}${p.exit ? ` [${p.exit} exit]` : ''}${p.description ? ` - ${p.description}` : ''}`;
+
+interface EditRow {
+    kind: string;
+    required: boolean;
+    quantity: string;
+    preferred: string[];    // pks as text; none = no preference, two = both needed
+    options: AccessoryPart[];
+}
+
+function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
+    const partId = context.id;
+    const [state, setState] = useState<AccessoryState | null>(null);
+    const [rows, setRows] = useState<EditRow[]>([]);
+    const [linkRelated, setLinkRelated] = useState(true);
+    const [loading, setLoading] = useState(true);
+    const [saving, setSaving] = useState(false);
+
+    const apply = useCallback((data: AccessoryState) => {
+        setState(data);
+        setRows((data.kinds || []).map((k) => ({
+            kind: k.kind, required: k.required, quantity: String(k.quantity || 1),
+            preferred: k.preferred.map(String),
+            options: k.options,
+        })));
+    }, []);
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const response = await context.api.get(`${PLUGIN}/accessory-setup/${partId}/`);
+            apply(response.data);
+        } catch (error: any) {
+            setState(null);
+            notifications.show({ color: 'red', title: 'OMG Accessories', message: apiError(error, "Couldn't load.") });
+        } finally {
+            setLoading(false);
+        }
+    }, [context.api, partId, apply]);
+
+    useEffect(() => { load(); }, [load]);
+
+    const save = useCallback(async () => {
+        setSaving(true);
+        try {
+            const response = await context.api.post(`${PLUGIN}/accessory-setup/${partId}/`, {
+                kinds: rows.map((r) => ({ kind: r.kind, required: r.required, quantity: r.quantity,
+                    preferred_pks: r.preferred.map(Number) })),
+                link_related: linkRelated,
+            });
+            apply(response.data);
+            notifications.show({ color: 'green', title: 'OMG Accessories', message: 'Saved.' });
+        } catch (error: any) {
+            notifications.show({ color: 'red', title: 'OMG Accessories', message: apiError(error, 'Save failed.') });
+        } finally {
+            setSaving(false);
+        }
+    }, [rows, linkRelated, context.api, partId, apply]);
+
+    if (loading) return <Loader size="sm" />;
+    if (!state) return <Alert color="red">Couldn't load the accessories.</Alert>;
+    if (state.error) return <Alert color="orange" title="OMG Accessories">{state.error}</Alert>;
+
+    const templatesAlert = state.missing_templates.length > 0 && (
+        <Alert color="red">Missing parameter templates in InvenTree: {state.missing_templates.join(', ')} - create
+            them (OMG &gt; InvenTree Settings &gt; Part Parameters can).</Alert>
+    );
+
+    if (state.mode === 'accessory') {
+        const list = state.connectors || [];
+        return (
+            <Stack gap="sm">
+                <Title order={4}>OMG Accessories - what this {state.component_type} fits</Title>
+                {templatesAlert}
+                <Text size="sm" c="dimmed">
+                    Fits connectors with Connector Series "{state.fits?.series || '?'}", Side
+                    "{state.fits?.side || 'Both'}" and {state.fits?.ways ? `${state.fits.ways} way` : 'any number of ways'}.
+                    Change those in OMG Part Setup.
+                </Text>
+                {list.length === 0 && <Alert color="yellow">No connector in InvenTree matches yet - check its Connector
+                    Series, Side and Ways, and the connectors' own Connector Series / Side / Contact Count.</Alert>}
+                {list.length > 0 && (
+                    <Table withTableBorder>
+                        <Table.Thead><Table.Tr>
+                            <Table.Th>Connector</Table.Th><Table.Th>Description</Table.Th><Table.Th />
+                        </Table.Tr></Table.Thead>
+                        <Table.Tbody>
+                            {list.map((c) => (
+                                <Table.Tr key={c.pk}>
+                                    <Table.Td><a href={`/web/part/${c.pk}/`}>{c.name}</a></Table.Td>
+                                    <Table.Td><Text size="sm">{c.description}</Text></Table.Td>
+                                    <Table.Td><Group gap={4}>
+                                        {c.required ? <Badge color="red" variant="light">required</Badge>
+                                            : <Badge color="gray" variant="light">optional</Badge>}
+                                        {c.preferred && <Badge color="green" variant="light">preferred</Badge>}
+                                    </Group></Table.Td>
+                                </Table.Tr>
+                            ))}
+                        </Table.Tbody>
+                    </Table>
+                )}
+            </Stack>
+        );
+    }
+
+    const setRow = (i: number, patch: Partial<EditRow>) =>
+        setRows((old) => old.map((r, j) => (j === i ? { ...r, ...patch } : r)));
+    const unused = state.accessory_types.filter((t) => !rows.some((r) => r.kind === t));
+
+    return (
+        <Stack gap="sm">
+            <Title order={4}>OMG Accessories{state.connector ? ` - ${state.connector}` : ''}</Title>
+            {templatesAlert}
+            <Text size="sm" c="dimmed">
+                Locks, boots, covers... that fit this connector (same Connector Series and Side, and its Contact
+                Count listed in their Ways). Tick the ones it must have - OMG adds them to every harness using this
+                connector. Where several parts fit, pick the one to use (pick two if both are needed, e.g. signal and
+                power locks), or leave it blank for whoever builds the harness to choose.
+            </Text>
+            {(state.problems || []).map((p, i) => <Alert key={i} color="yellow">{p}</Alert>)}
+            {rows.length === 0 && <Text size="sm" c="dimmed">No accessory in InvenTree fits this connector yet.</Text>}
+            {rows.length > 0 && (
+                <Table withTableBorder>
+                    <Table.Thead><Table.Tr>
+                        <Table.Th>Kind</Table.Th><Table.Th>Required</Table.Th><Table.Th>Qty</Table.Th>
+                        <Table.Th>Part to use</Table.Th>
+                    </Table.Tr></Table.Thead>
+                    <Table.Tbody>
+                        {rows.map((r, i) => (
+                            <Table.Tr key={r.kind}>
+                                <Table.Td>{r.kind}</Table.Td>
+                                <Table.Td><Checkbox checked={r.required} disabled={!state.can_edit}
+                                    onChange={(e) => setRow(i, { required: e.currentTarget.checked })} /></Table.Td>
+                                <Table.Td>{r.required && <TextInput size="xs" w={60} value={r.quantity}
+                                    disabled={!state.can_edit}
+                                    onChange={(e) => setRow(i, { quantity: e.currentTarget.value })} />}</Table.Td>
+                                <Table.Td>
+                                    {r.options.length === 0 && <Badge color="red" variant="light">nothing fits yet</Badge>}
+                                    {r.options.length === 1 && <Text size="sm">{accessoryLabel(r.options[0])}</Text>}
+                                    {r.options.length > 1 && (
+                                        <MultiSelect size="xs" disabled={!state.can_edit} clearable
+                                            placeholder={r.preferred.length ? '' : (r.required ? 'Ask when building the harness' : 'No preference')}
+                                            data={r.options.map((p) => ({ value: String(p.pk), label: accessoryLabel(p) }))}
+                                            value={r.preferred} onChange={(v) => setRow(i, { preferred: v })} />
+                                    )}
+                                    {r.preferred.length > 1 && <Text size="xs" c="dimmed">
+                                        All {r.preferred.length} are needed (one of each).</Text>}
+                                </Table.Td>
+                            </Table.Tr>
+                        ))}
+                    </Table.Tbody>
+                </Table>
+            )}
+            {unused.length > 0 && state.can_edit && (
+                <Select size="xs" w={260} placeholder="Require another kind..." data={unused} value={null}
+                    onChange={(v) => v && setRows((old) => [...old,
+                        { kind: v, required: true, quantity: '1', preferred: [], options: [] }])} />
+            )}
+            <Checkbox checked={linkRelated} onChange={(e) => setLinkRelated(e.currentTarget.checked)}
+                label="Also link the fitting parts as related parts (for reference in InvenTree)" />
+            <Group>
+                <Button onClick={save} loading={saving} disabled={!state.can_edit}>Save</Button>
+                <Button variant="subtle" onClick={load}>Reload</Button>
+            </Group>
+        </Stack>
+    );
+}
+
+export function RenderOMGAccessoryPanel(context: InvenTreePluginContext) {
+    checkPluginVersion(context);
+    return <OMGAccessoryPanel context={context} />;
 }
 
 export function RenderOMGPartSetupPanel(context: InvenTreePluginContext) {

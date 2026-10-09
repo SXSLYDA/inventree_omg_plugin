@@ -491,10 +491,6 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
         if not pk:
             part_no = (w.get("conductor_part_no") or "").strip()
             description = (w.get("conductor_description") or "").strip()
-            size = w.get("conductor_size")
-            conductor_type = (w.get("conductor_type") or "").strip()
-            primary = (w.get("conductor_primary") or "").strip()
-            secondary = (w.get("conductor_secondary") or "").strip()
 
             resolved_pk = None
             candidate_pks = None
@@ -509,8 +505,8 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
             # OMG's own choice (components/wire_selection.py - mm² or AWG,
             # colour codes, the harness's insulation/material/temperature
             # rules, parts in stock first). Sent only for wires with no
-            # part number; an older OMG doesn't send it and the gauge
-            # search below runs as before.
+            # part number. If OMG couldn't reach InvenTree it sends none,
+            # and the wire is flagged below rather than guessed at here.
             omg_selection = w.get("omg_selection") if not part_no else None
             if resolved_pk is None and candidate_pks is None and omg_selection:
                 if omg_selection.get("status") == "match" and omg_selection.get("pk"):
@@ -520,16 +516,6 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                                "OMG couldn't pick a wire part: " + (omg_selection.get("message") or "no match."),
                                wire_no=w.get("wire_no"))
                     continue
-
-            if resolved_pk is None and candidate_pks is None and size is not None:
-                param_candidates = native.find_conductor_candidates_native(
-                    size=size, conductor_type=conductor_type, primary_color=primary, secondary_color=secondary,
-                    parameter_names=omg_bom_data.get("parameter_names"),
-                )
-                if len(param_candidates) == 1:
-                    resolved_pk = param_candidates[0]
-                elif len(param_candidates) > 1:
-                    candidate_pks = param_candidates
 
             if candidate_pks:
                 _flag_wire(
@@ -542,7 +528,9 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
 
             if resolved_pk is None:
                 if not part_no:
-                    _flag_wire(batch, w["wire_id"], "No conductor part selected or typed for this wire in OMG yet, and no gauge/size to search by.",
+                    _flag_wire(batch, w["wire_id"],
+                               "No conductor part selected or typed for this wire in OMG, and OMG didn't pick one "
+                               "(no wire selection was sent - re-sync, or pick the part in OMG's Wire Auto-Select).",
                                wire_no=w.get("wire_no"))
                     continue
                 if description:
