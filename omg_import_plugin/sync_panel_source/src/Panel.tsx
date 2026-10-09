@@ -13,6 +13,37 @@ import SupplierImportWizard from './SupplierImportWizard';
 // import/sync calls get the longer timeout; everything else keeps the default.
 const SYNC_TIMEOUT_MS = 120000;
 
+// Harness imports run on InvenTree's BACKGROUND WORKER now (see the
+// plugin's harness_import_job.py): the import endpoint queues a job and
+// returns at once, and this polls the job until it finishes. A big
+// harness used to run past the web server's request timeout and fail
+// with a 500 even though nothing was wrong with it.
+const IMPORT_POLL_MS = 2000;
+const IMPORT_MAX_WAIT_MS = 15 * 60 * 1000;
+
+async function runHarnessImport(
+    api: InvenTreePluginContext['api'],
+    body: Record<string, unknown>,
+    onProgress?: (message: string) => void,
+): Promise<any> {
+    const started = await api.post('/plugin/omg-harness-import/import-harness/', body);
+    let job = started.data;
+    const deadline = Date.now() + IMPORT_MAX_WAIT_MS;
+    while (job.status === 'queued' || job.status === 'running') {
+        onProgress?.(job.progress || (job.status === 'queued' ? 'Waiting for the background worker…' : 'Working…'));
+        if (Date.now() > deadline) {
+            throw new Error('The import is still running after 15 minutes. Check back shortly, or look at InvenTree\'s background tasks.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, IMPORT_POLL_MS));
+        const polled = await api.get(`/plugin/omg-harness-import/import-harness/jobs/${job.job_id}/`);
+        job = polled.data;
+    }
+    if (job.status === 'failed') {
+        throw new Error(job.error || 'The import failed.');
+    }
+    return job.batch;
+}
+
 interface BatchSummary {
     id: number;
     created_at: string;
@@ -366,6 +397,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
     const [isLinked, setIsLinked] = useState(false);
     const [loadingStatus, setLoadingStatus] = useState(true);
     const [syncing, setSyncing] = useState(false);
+    const [syncProgress, setSyncProgress] = useState<string | null>(null);
     const [error, setError] = useState<string | null>(null);
     const [queue, setQueue] = useState<UnresolvedItem[]>([]);
     const [queueContextError, setQueueContextError] = useState<string | null>(null);
@@ -453,12 +485,12 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         setError(null);
 
         try {
-            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
+            const batch = await runHarnessImport(context.api, {
                 harness_part_number: partName,
                 target_part_pk: partId,
-            }, { timeout: SYNC_TIMEOUT_MS });
-            setLastBatch(response.data);
-            const flagged = response.data?.flagged_items || 0;
+            }, setSyncProgress);
+            setLastBatch(batch);
+            const flagged = batch?.flagged_items || 0;
             notifications.show({
                 title: 'Sync complete',
                 message: flagged > 0
@@ -466,7 +498,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                     : 'Synced — everything matched cleanly.',
                 color: flagged > 0 ? 'yellow' : 'green',
             });
-            if (response.data?.reconciliation_pushed === false) {
+            if (batch?.reconciliation_pushed === false) {
                 notifications.show({
                     title: 'Report-back to OMG failed',
                     message: 'The sync itself succeeded, but InvenTree could not report the result back to OMG. Check the InvenTree Webhook Token setting.',
@@ -479,6 +511,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             setError(`Sync failed: ${detail}`);
         } finally {
             setSyncing(false);
+            setSyncProgress(null);
         }
     }, [context.instance, context.api, partId, loadQueue]);
 
@@ -519,18 +552,18 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         setLinkingPartNumber(partNumber);
         setError(null);
         try {
-            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', {
+            const batch = await runHarnessImport(context.api, {
                 harness_part_number: partNumber,
                 target_part_pk: partId,
-            }, { timeout: SYNC_TIMEOUT_MS });
-            setLastBatch(response.data);
+            }, setSyncProgress);
+            setLastBatch(batch);
             setIsLinked(true);
             notifications.show({
                 title: 'Linked',
                 message: `Linked to ${partNumber} and imported its BOM.`,
                 color: 'green',
             });
-            if (response.data?.reconciliation_pushed === false) {
+            if (batch?.reconciliation_pushed === false) {
                 notifications.show({
                     title: 'Report-back to OMG failed',
                     message: 'The link/import itself succeeded, but InvenTree could not report the result back to OMG. Check the InvenTree Webhook Token setting.',
@@ -543,6 +576,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
             setError(`Could not link ${partNumber}: ${detail}`);
         } finally {
             setLinkingPartNumber(null);
+            setSyncProgress(null);
         }
     }, [context.api, partId, loadQueue]);
 
@@ -592,6 +626,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                 </Group>
 
                 {searchError && <Alert color="orange">{searchError}</Alert>}
+                {linkingPartNumber && syncProgress && <Text size="sm" c="dimmed">{syncProgress}</Text>}
                 {error && <Alert color="red" title="Link issue">{error}</Alert>}
 
                 {hasSearched && !searching && !searchError && results.length === 0 && (
@@ -648,6 +683,7 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
                 )}
             </Group>
 
+            {syncing && syncProgress && <Text size="sm" c="dimmed">{syncProgress}</Text>}
             {error && <Alert color="red" title="Sync issue">{error}</Alert>}
 
             {lastBatch && (

@@ -41,6 +41,7 @@ $panels = [ordered]@{
     "sync_panel_source"           = "Panel"
     "so_export_panel_source"      = "SOExportPanel"
     "import_harness_panel_source" = "ImportHarnessPanel"
+    "part_setup_panel_source"     = "PartSetupPanel"
 }
 $staticPath = Join-Path $root "omg_import_plugin\static"
 $manifestPath = Join-Path $staticPath ".vite\manifest.json"

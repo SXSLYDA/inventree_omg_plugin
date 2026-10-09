@@ -6,8 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .harness_import import import_or_update_harness_bom
-from .models import ImportBatch, UnresolvedImportItem
+from .models import HarnessImportJob, ImportBatch, UnresolvedImportItem
 from .omg_credentials import get_omg_credentials
 from .reconciliation import push_reconciliation_to_omg, push_reconciliation_to_omg_detailed
 from .resolve_pending import resolve_pending_parts
@@ -433,61 +432,103 @@ class HarnessImportView(APIView):
     Also serves as the "update" action — re-running this after design
     changes in OMG is the intended way to keep things in sync.
 
+    Runs in InvenTree's BACKGROUND WORKER, not in this request: a big
+    harness took longer than the web server's request timeout and was
+    killed half way (the panel showed a 500). This creates a
+    HarnessImportJob, offloads harness_import_job.run_harness_import_job,
+    and returns 202 {"job_id", "status"} at once. Poll
+    GET import-harness/jobs/<job_id>/ (HarnessImportJobView) for the
+    result. If the worker isn't running, InvenTree runs the job inside
+    this request instead and it's already finished when this returns.
+
     Uses the requesting InvenTree user's own OMG credentials if they
     have a personal OmgUserCredential set (see omg_credentials.py),
     falling back to the plugin-wide setting otherwise — same as
-    HarnessSearchProxyView.
+    HarnessSearchProxyView. Credentials are checked here too, so a
+    missing setup fails at once instead of after queueing.
     """
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         serializer = HarnessImportRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        harness_part_number = serializer.validated_data["harness_part_number"]
-        category_pk = serializer.validated_data.get("category_pk")
-        target_part_pk = serializer.validated_data.get("target_part_pk")
 
         from plugin.registry import registry
         plugin = registry.get_plugin("omg-harness-import")
         omg_base_url, omg_token = get_omg_credentials(request.user, plugin=plugin)
-
         if not omg_base_url or not omg_token:
             return Response(
                 {"detail": "OMG Harness credentials aren't configured — set them in plugin settings, or ask an admin to set up your personal OMG credential."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
 
+        job = HarnessImportJob.objects.create(
+            harness_part_number=serializer.validated_data["harness_part_number"],
+            category_pk=serializer.validated_data.get("category_pk"),
+            target_part_pk=serializer.validated_data.get("target_part_pk"),
+            user=request.user,
+        )
+
+        from InvenTree.tasks import offload_task
+        from .harness_import_job import TASK_PATH
         try:
-            # inventree_pk lets OMG find the harness through its link to
-            # this InvenTree part even after the harness was renamed in OMG
-            # (harness_part_number here is this InvenTree part's current,
-            # possibly old, name). Ignored by older OMG versions.
-            resp = requests.get(
-                f"{omg_base_url.rstrip('/')}/api/harness/{harness_part_number}/inventree-bom/",
-                headers={"Authorization": f"Token {omg_token}"},
-                params={"inventree_pk": target_part_pk} if target_part_pk else None,
-                timeout=15,
-            )
-            resp.raise_for_status()
-            omg_bom_data = resp.json()
-        except requests.RequestException as exc:
-            return Response({"detail": f"Could not reach OMG Harness to fetch BOM data: {exc}"}, status=status.HTTP_502_BAD_GATEWAY)
+            # check_duplicates=False: every job id is unique anyway, and two
+            # people syncing the same harness should each get their own job.
+            offloaded = offload_task(TASK_PATH, job.pk, check_duplicates=False)
+        except Exception as exc:   # only reachable when it ran synchronously and blew up
+            offloaded = False
+            job.refresh_from_db()
+            if job.status != HarnessImportJob.Status.FAILED:
+                job.status, job.error = HarnessImportJob.Status.FAILED, f"Could not run the import: {exc}"
+                job.save(update_fields=["status", "error"])
+        if offloaded is False:
+            job.refresh_from_db()
+            if job.status == HarnessImportJob.Status.QUEUED:
+                job.status = HarnessImportJob.Status.FAILED
+                job.error = "Could not queue the import on InvenTree's background worker - check that the worker is running."
+                job.save(update_fields=["status", "error"])
 
-        # Contacts, blanks and the parameter names all come from OMG with the
-        # payload (part_logic / parameter_names) - no plugin settings for them.
-        try:
-            batch, resolved_matches = import_or_update_harness_bom(
-                harness_part_number, omg_bom_data,
-                category_pk=category_pk, target_part_pk=target_part_pk,
-            )
-        except ValueError as exc:
-            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        job.refresh_from_db()
+        return Response(_job_payload(job), status=status.HTTP_202_ACCEPTED)
 
-        reconciliation_pushed = push_reconciliation_to_omg(batch, resolved_matches=resolved_matches)
 
-        data = ImportBatchSerializer(batch).data
-        data["reconciliation_pushed"] = reconciliation_pushed
-        return Response(data, status=status.HTTP_201_CREATED)
+def _job_payload(job):
+    """
+    What the panels poll for. When done, "batch" is the same
+    ImportBatchSerializer data the old synchronous endpoint returned,
+    plus reconciliation_pushed - so the panels' result handling is unchanged.
+    """
+    data = {
+        "job_id": job.pk,
+        "status": job.status,
+        "progress": job.progress,
+        "error": job.error,
+        "created_at": job.created_at,
+        "finished_at": job.finished_at,
+        "batch": None,
+    }
+    if job.status == HarnessImportJob.Status.DONE and job.batch_id:
+        batch = ImportBatchSerializer(job.batch).data
+        batch["reconciliation_pushed"] = job.reconciliation_pushed
+        data["batch"] = batch
+    return data
+
+
+class HarnessImportJobView(APIView):
+    """
+    GET /plugin/omg-harness-import/import-harness/jobs/<job_id>/
+
+    Status of one background harness import (see HarnessImportView):
+    {"job_id", "status": queued|running|done|failed, "progress", "error",
+    "batch"}. Only the user who started it, or staff, can read it.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request, job_id):
+        job = HarnessImportJob.objects.filter(pk=job_id).select_related("batch").first()
+        if job is None or (job.user_id != request.user.pk and not request.user.is_staff):
+            return Response({"detail": "Import job not found."}, status=status.HTTP_404_NOT_FOUND)
+        return Response(_job_payload(job))
 
 
 # Mouser search/create is no longer a custom endpoint here — it lives in
@@ -532,10 +573,34 @@ class CredentialStatusView(APIView):
             "omg_inventree_user_token": is_set("OMG_HARNESS_API_TOKEN"),
             "inventree_webhook_token": is_set("OMG_INBOUND_WEBHOOK_TOKEN"),
             "mouser_api_key": is_set("OMG_MOUSER_API_KEY"),
+            # The wire gauge fill-in (gauge_autofill.py) only runs when
+            # InvenTree's event integration is on AND the background worker
+            # is running - otherwise it silently does nothing.
+            "event_integration": _event_integration_enabled(),
+            "background_worker": _worker_running(),
         })
 
 
+def _event_integration_enabled():
+    """InvenTree's 'Enable event integration' plugin setting (None if it can't be read)."""
+    try:
+        from common.settings import get_global_setting
+        return bool(get_global_setting("ENABLE_PLUGINS_EVENTS"))
+    except Exception:
+        return None
+
+
+def _worker_running():
+    """Whether InvenTree's background worker has checked in recently (None if unknown)."""
+    try:
+        from InvenTree.status import is_worker_running
+        return bool(is_worker_running())
+    except Exception:
+        return None
+
+
 from .sales_order_export import SalesOrderPartsListExportView
+from .part_setup import CavitySetupView, PartSetupView
 
 urlpatterns = [
     path("import/", ImportView.as_view(), name="omg-import"),
@@ -548,5 +613,9 @@ urlpatterns = [
     path("resolve-pending/", ResolvePendingView.as_view(), name="omg-resolve-pending"),
     path("harness-search/", HarnessSearchProxyView.as_view(), name="omg-harness-search"),
     path("import-harness/", HarnessImportView.as_view(), name="omg-import-harness"),
+    path("import-harness/jobs/<int:job_id>/", HarnessImportJobView.as_view(), name="omg-import-harness-job"),
     path("credential-status/", CredentialStatusView.as_view(), name="omg-credential-status"),
+    # Part Setup / Cavities panels (part_setup.py)
+    path("part-setup/<int:pk>/", PartSetupView.as_view(), name="omg-part-setup"),
+    path("cavity-setup/<int:pk>/", CavitySetupView.as_view(), name="omg-cavity-setup"),
 ]

@@ -3,13 +3,36 @@ import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput, Title } fr
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
-// A sync is one long server-side request: InvenTree fetches the BOM from
-// OMG, matches/updates every BOM line, then reports back to OMG's
-// webhook. That regularly takes longer than the 5s default timeout on
-// InvenTree's API client ("timeout of 5000ms exceeded"), so the panel
-// reported a failure even when the sync finished fine. Only the
-// import/sync calls get the longer timeout; everything else keeps the default.
-const SYNC_TIMEOUT_MS = 120000;
+// Harness imports run on InvenTree's BACKGROUND WORKER now (see the
+// plugin's harness_import_job.py): the import endpoint queues a job and
+// returns at once, and this polls the job until it finishes. A big
+// harness used to run past the web server's request timeout and fail
+// with a 500 even though nothing was wrong with it.
+const IMPORT_POLL_MS = 2000;
+const IMPORT_MAX_WAIT_MS = 15 * 60 * 1000;
+
+async function runHarnessImport(
+    api: InvenTreePluginContext['api'],
+    body: Record<string, unknown>,
+    onProgress?: (message: string) => void,
+): Promise<any> {
+    const started = await api.post('/plugin/omg-harness-import/import-harness/', body);
+    let job = started.data;
+    const deadline = Date.now() + IMPORT_MAX_WAIT_MS;
+    while (job.status === 'queued' || job.status === 'running') {
+        onProgress?.(job.progress || (job.status === 'queued' ? 'Waiting for the background worker…' : 'Working…'));
+        if (Date.now() > deadline) {
+            throw new Error('The import is still running after 15 minutes. Check back shortly, or look at InvenTree\'s background tasks.');
+        }
+        await new Promise((resolve) => setTimeout(resolve, IMPORT_POLL_MS));
+        const polled = await api.get(`/plugin/omg-harness-import/import-harness/jobs/${job.job_id}/`);
+        job = polled.data;
+    }
+    if (job.status === 'failed') {
+        throw new Error(job.error || 'The import failed.');
+    }
+    return job.batch;
+}
 
 /**
  * "Import Harness from OMG" dashboard item — lives on the main
@@ -45,6 +68,9 @@ interface CredentialStatus {
     omg_inventree_user_token: boolean;
     inventree_webhook_token: boolean;
     mouser_api_key: boolean;
+    // Needed for the wire gauge fill-in (null = couldn't tell)
+    event_integration?: boolean | null;
+    background_worker?: boolean | null;
 }
 
 function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginContext }) {
@@ -57,6 +83,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
     const [categorySearchTerm, setCategorySearchTerm] = useState('');
     const [categorySearching, setCategorySearching] = useState(false);
     const [importingPartNumber, setImportingPartNumber] = useState<string | null>(null);
+    const [importProgress, setImportProgress] = useState<string | null>(null);
     // partPk only set on a successful import - lets the success Alert
     // offer a "Review in InvenTree" button straight to that part's own
     // OMG Harness Sync panel, rather than leaving the person to find it
@@ -156,8 +183,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             };
             if (categoryPk !== '') body.category_pk = categoryPk;
 
-            const response = await context.api.post('/plugin/omg-harness-import/import-harness/', body, { timeout: SYNC_TIMEOUT_MS });
-            const batch = response.data;
+            const batch = await runHarnessImport(context.api, body, setImportProgress);
             const reconciliationWarning = batch.reconciliation_pushed === false
                 ? ' Import succeeded, but reporting the result back to OMG failed — check the InvenTree Webhook Token setting.'
                 : '';
@@ -177,6 +203,7 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             setImportMessage({ text: `Could not import ${partNumber}: ${detail}`, isError: true });
         } finally {
             setImportingPartNumber(null);
+            setImportProgress(null);
         }
     }, [categoryPk, context.api]);
 
@@ -229,6 +256,11 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
                         ['OMG User Token', credentialStatus.omg_inventree_user_token],
                         ['Webhook Token', credentialStatus.inventree_webhook_token],
                         ['Mouser Key', credentialStatus.mouser_api_key],
+                        // Gauge mm2 <-> AWG fill-in needs both of these
+                        ...(credentialStatus.event_integration === undefined ? [] : [
+                            ['Event Integration', !!credentialStatus.event_integration],
+                            ['Background Worker', !!credentialStatus.background_worker],
+                        ]),
                     ] as [string, boolean][]).map(([label, configured]) => (
                         <Badge
                             key={label}
@@ -270,6 +302,9 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
             </Group>
 
             {searchError && <Alert color="orange">{searchError}</Alert>}
+            {importingPartNumber && importProgress && (
+                <Text size="sm" c="dimmed">{importingPartNumber}: {importProgress}</Text>
+            )}
             {importMessage && (
                 <Alert color={importMessage.isError ? 'red' : 'green'}>
                     <Stack gap={6}>

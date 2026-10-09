@@ -1,10 +1,18 @@
 """
 Requires the plugin to use AppMixin (see core.py) so InvenTree registers
-this as a real Django app with its own migrations.
+this as a real Django app.
 
-After first install, from the InvenTree server:
-    invoke migrate
-(InvenTree's own migrate wrapper picks up plugin apps automatically.)
+NO MIGRATIONS: this plugin has no migrations/ folder. InvenTree creates
+these tables with Django's syncdb step during `invoke update` (the
+update log lists omg_import_plugin under "Synchronize unmigrated apps").
+syncdb only ever CREATES a table that doesn't exist yet - it never
+ALTERs an existing one. So:
+  - adding a NEW model works: its table appears on the next `invoke update`
+    (that's how HarnessImportJob was added)
+  - adding, removing or changing a FIELD on an existing model does NOT:
+    the column never appears and the code fails at runtime. Either add a
+    new model instead, or first give the plugin real migrations (a
+    migrations/ folder with an initial migration matching the live tables).
 """
 
 from django.conf import settings
@@ -145,3 +153,54 @@ class OmgUserCredential(models.Model):
 
     class Meta:
         app_label = "omg_import_plugin"
+
+
+class HarnessImportJob(models.Model):
+    """
+    One queued "import/sync this harness from OMG" request, run by
+    InvenTree's background worker (harness_import_job.py) instead of
+    inside the web request.
+
+    Why a job record: a big harness (hundreds of BOM lines) took longer
+    than the web server's request timeout, so the import was killed half
+    way and the panel showed a 500. Now the import endpoint creates one
+    of these, offloads the work, and returns at once; the panel polls the
+    job's status until it's done.
+
+    A NEW model rather than extra fields on ImportBatch on purpose: this
+    plugin has no migrations folder, so InvenTree creates its tables with
+    syncdb - which creates a missing table but never ALTERs an existing
+    one. A new table appears on the next `invoke update`; new columns on
+    ImportBatch would not.
+    """
+
+    class Status(models.TextChoices):
+        QUEUED = "queued", "Queued"
+        RUNNING = "running", "Running"
+        DONE = "done", "Done"
+        FAILED = "failed", "Failed"
+
+    harness_part_number = models.CharField(max_length=120)
+    category_pk = models.IntegerField(null=True, blank=True)
+    target_part_pk = models.IntegerField(null=True, blank=True)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL, null=True, blank=True, on_delete=models.SET_NULL, related_name="+",
+        help_text="Who started it - their personal OMG credential is used, same as the old in-request import.",
+    )
+
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.QUEUED)
+    progress = models.CharField(max_length=255, blank=True, help_text="What it's doing now, shown in the panel.")
+    error = models.TextField(blank=True, help_text="Why it failed, in plain words, if it did.")
+    batch = models.ForeignKey(ImportBatch, null=True, blank=True, on_delete=models.SET_NULL, related_name="+")
+    reconciliation_pushed = models.BooleanField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+
+    def __str__(self):
+        return f"Import job {self.pk} for {self.harness_part_number} ({self.status})"
+
+    class Meta:
+        app_label = "omg_import_plugin"
+        ordering = ["-created_at"]

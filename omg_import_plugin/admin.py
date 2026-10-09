@@ -1,7 +1,7 @@
 """
 InvenTree's AppMixin registers this plugin as a real Django app, so a
 normal admin.py here gets picked up the standard way — no special plugin
-admin API needed.
+admin API needed. (A real app, but without migrations - see models.py.)
 
 Nothing to register here for cavity layout / component type / blank /
 contact — those all live as standard InvenTree Part Parameters and
@@ -12,7 +12,7 @@ specific admin screen.
 
 from django.contrib import admin
 
-from .models import ImportBatch, OmgUserCredential, UnresolvedImportItem
+from .models import HarnessImportJob, ImportBatch, OmgUserCredential, UnresolvedImportItem
 
 
 @admin.register(ImportBatch)
@@ -43,3 +43,12 @@ class OmgUserCredentialAdmin(admin.ModelAdmin):
         return bool(obj.omg_api_token)
     has_token.boolean = True
     has_token.short_description = "Token set?"
+
+
+@admin.register(HarnessImportJob)
+class HarnessImportJobAdmin(admin.ModelAdmin):
+    """Background harness imports - see harness_import_job.py. Read-only: the worker owns these."""
+    list_display = ["harness_part_number", "status", "user", "created_at", "finished_at"]
+    list_filter = ["status"]
+    search_fields = ["harness_part_number", "error"]
+    readonly_fields = [f.name for f in HarnessImportJob._meta.fields]

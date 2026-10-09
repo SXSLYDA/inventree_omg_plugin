@@ -266,7 +266,9 @@ def _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks):
     the harness-wide total (adding per connector part used to overwrite a
     shared contact's count with the last connector's).
     """
-    for kind in ("contacts", "blanks"):
+    # seals: one per individually sealed cavity (OMG Cavity Map) - an older
+    # OMG simply doesn't send the key
+    for kind in ("contacts", "seals", "blanks"):
         for line in part_logic.get(kind, []):
             sub_part = Part.objects.filter(pk=line.get("inventree_pk")).first()
             if sub_part is None:
@@ -282,10 +284,15 @@ def _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks):
             seen_sub_part_pks.add(sub_part.pk)
 
     for issue in part_logic.get("issues", []):
+        # OMG marks each issue 'error' or 'warning' (e.g. a wire's insulation
+        # OD unknown, so its seal / max OD couldn't be checked)
+        message = issue.get("message", "")
+        if issue.get("severity") == "warning":
+            message = "Warning: " + message
         if issue.get("object_type") == "wire":
-            _flag_wire(batch, issue.get("object_id"), issue.get("message", ""), wire_no=issue.get("wire_no"))
+            _flag_wire(batch, issue.get("object_id"), message, wire_no=issue.get("wire_no"))
         else:
-            _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), issue.get("message", ""))
+            _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), message)
 
 
 def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=None, target_part_pk=None):
@@ -498,6 +505,21 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                     resolved_pk = candidates[0].pk
                 elif len(candidates) > 1:
                     candidate_pks = [p.pk for p in candidates]
+
+            # OMG's own choice (components/wire_selection.py - mm² or AWG,
+            # colour codes, the harness's insulation/material/temperature
+            # rules, parts in stock first). Sent only for wires with no
+            # part number; an older OMG doesn't send it and the gauge
+            # search below runs as before.
+            omg_selection = w.get("omg_selection") if not part_no else None
+            if resolved_pk is None and candidate_pks is None and omg_selection:
+                if omg_selection.get("status") == "match" and omg_selection.get("pk"):
+                    resolved_pk = omg_selection["pk"]
+                else:
+                    _flag_wire(batch, w["wire_id"],
+                               "OMG couldn't pick a wire part: " + (omg_selection.get("message") or "no match."),
+                               wire_no=w.get("wire_no"))
+                    continue
 
             if resolved_pk is None and candidate_pks is None and size is not None:
                 param_candidates = native.find_conductor_candidates_native(

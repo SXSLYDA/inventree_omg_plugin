@@ -17,9 +17,8 @@
  * Plus, for the review queue: a supplier and search term can be pre-set and
  * searched on open, and onImported() reports the new part to the caller.
  *
- * Parameters: InvenTree 1.1 stores part parameters at part/parameter/
- * ({part, template, data}); 1.2 moved them to parameter/ ({model_type,
- * model_id, template, data}). Which one this server has is detected once.
+ * Parameters: InvenTree 1.2+ parameter/ ({model_type, model_id, template,
+ * data}) - the old part/parameter/ endpoints of 1.1 are gone.
  */
 import {
     ActionIcon,
@@ -57,12 +56,8 @@ const EP = {
     supplierImport: '/api/supplier/import/',
     categoryList: '/api/part/category/',
     stockList: '/api/stock/',
-    // InvenTree 1.2+
     parameterList: '/api/parameter/',
     parameterTemplateList: '/api/parameter/template/',
-    // InvenTree 1.1
-    partParameterList: '/api/part/parameter/',
-    partParameterTemplateList: '/api/part/parameter/template/',
 };
 
 const IMPORT_TIMEOUT_MS = 120000;
@@ -546,15 +541,6 @@ export default function SupplierImportWizard({ context, opened, onClose, initial
     const [importResult, setImportResult] = useState<ImportResult>();
     const [isImporting, setIsImporting] = useState(false);
     const [parameterErrors, setParameterErrors] = useState<{ template?: string; data?: string }[] | null>(null);
-    const [newParameterApi, setNewParameterApi] = useState<boolean | null>(null);
-
-    // Which parameter API this InvenTree has (1.2+ parameter/, else 1.1 part/parameter/).
-    useEffect(() => {
-        if (!opened || newParameterApi !== null) return;
-        context.api.get(EP.parameterTemplateList, { params: { limit: 1 } })
-            .then(() => setNewParameterApi(true))
-            .catch(() => setNewParameterApi(false));
-    }, [opened]);
 
     const editPart = context.forms.edit({
         url: 'part/',
@@ -598,11 +584,10 @@ export default function SupplierImportWizard({ context, opened, onClose, initial
         setParameterErrors(null);
         const useParameters = parameters.map((x, i) => ({ ...x, i })).filter((p) => p.use);
         const map = useParameters.reduce((acc, p, i) => { acc[p.i] = i; return acc; }, {} as Record<number, number>);
-        const payload = useParameters.map((p) => (newParameterApi
-            ? { model_type: 'part', model_id: importResult.part_id, template: p.parameter_template, data: p.value }
-            : { part: importResult.part_id, template: p.parameter_template, data: p.value }));
+        const payload = useParameters.map((p) => (
+            { model_type: 'part', model_id: importResult.part_id, template: p.parameter_template, data: p.value }));
         try {
-            await context.api.post(newParameterApi ? EP.parameterList : EP.partParameterList, payload);
+            await context.api.post(EP.parameterList, payload);
             notifications.show({ title: 'Success', message: 'Parameters created successfully!', color: 'green' });
             setStep(3);
         } catch (err: any) {
@@ -616,7 +601,7 @@ export default function SupplierImportWizard({ context, opened, onClose, initial
             notifications.show({ title: 'Error', message: 'Failed to create parameters, please fix the errors and try again', color: 'red' });
         }
         setIsImporting(false);
-    }, [context.api, importResult, newParameterApi]);
+    }, [context.api, importResult]);
 
     const openPage = (path: string) => { close(); context.navigate(path); };
 
@@ -672,10 +657,10 @@ export default function SupplierImportWizard({ context, opened, onClose, initial
                     <CategoryStep context={context} isImporting={isImporting} importPart={importPart} />
                 )}
 
-                {step === 2 && importResult && newParameterApi !== null && (
+                {step === 2 && importResult && (
                     <ParametersStep context={context} importResult={importResult} isImporting={isImporting}
                                     parameterErrors={parameterErrors} importParameters={importParameters}
-                                    templateUrl={newParameterApi ? EP.parameterTemplateList : EP.partParameterTemplateList}
+                                    templateUrl={EP.parameterTemplateList}
                                     skipStep={() => setStep(3)} />
                 )}
 

@@ -8,7 +8,12 @@ part-creation wizard.
 
 Mixins used:
 - AppMixin:            ships this plugin's own DB models (ImportBatch,
-                        UnresolvedImportItem) with real migrations.
+                        UnresolvedImportItem, OmgUserCredential,
+                        HarnessImportJob). No migrations folder - the
+                        tables are created by syncdb during `invoke
+                        update`, which adds new tables but never changes
+                        existing ones; see models.py's docstring before
+                        changing any model.
                         Blanks-needed and contacts-consumed data live as
                         native InvenTree Part Parameters + Related Parts
                         instead of a bespoke plugin model — see
@@ -30,6 +35,11 @@ Mixins used:
                         same capability less completely — that ONE panel
                         was removed once this native mechanism was
                         confirmed to exist.
+- EventMixin:           wire gauge auto-fill - saving "Gauge mm2" or "Gauge AWG"
+                        on a part fills the other one if blank, from OMG's AWG / mm²
+                        table (gauge_autofill.py).
+- ValidationMixin:      refuses a Gauge AWG that isn't a standard size, or a
+                        Gauge mm2 that isn't a number (gauge_autofill.py).
 - UserInterfaceMixin:   re-added for a DIFFERENT, smaller panel than the
                         one removed above — "Sync with OMG" on a
                         harness's own part detail page. There's no
@@ -39,30 +49,38 @@ Mixins used:
                         part; the button re-runs import_or_update_harness_bom
                         for that part's IPN — same action whether it's the
                         first import or a re-sync after OMG design
-                        changes. See sync_panel/ for source, static/ for
+                        changes. The import runs on InvenTree's background
+                        worker (harness_import_job.py) and the panel polls
+                        for the result, so a big harness can't hit the web
+                        server's request timeout. See sync_panel/ for source, static/ for
                         the compiled output (built and verified the same
                         way as the earlier Mouser panel was).
 
 Install: pip install -e this plugin, enable it from InvenTree's Plugins
-admin page, run migrations (AppMixin needs its tables created), then set
+admin page, run `invoke update` (creates this plugin's tables via syncdb -
+there are no migrations, see models.py), then set
 the OMG_* settings below from InvenTree's Plugin Settings UI — including
 picking which Company record represents Mouser as a supplier (added
 automatically by SupplierMixin as its own "SUPPLIER" setting).
 """
 
 from plugin import InvenTreePlugin
-from plugin.mixins import AppMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin
+from plugin.mixins import AppMixin, EventMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin, ValidationMixin
 
 from .mouser_supplier import MouserSupplierMixin
 from .version import OMG_IMPORT_PLUGIN_VERSION
 
 
-class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMixin, InvenTreePlugin):
+class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMixin, EventMixin,
+                             ValidationMixin, InvenTreePlugin):
     NAME = "OmgHarnessImport"
     SLUG = "omg-harness-import"
     TITLE = "OMG Harness Import"
     DESCRIPTION = "Imports/updates harness BOMs from OMG Harness, reconciles components against InvenTree, and integrates Mouser into the native Import Part wizard."
     VERSION = OMG_IMPORT_PLUGIN_VERSION
+    # InvenTree 1.2+ only (generic common.models parameters; the 1.1 support
+    # was removed). InvenTree refuses to load the plugin on anything older.
+    MIN_VERSION = "1.2.0"
     AUTHOR = "Tyler / OMG Harness"
 
     SETTINGS = {
@@ -117,6 +135,38 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "validator": int,
         },
     }
+
+    # --- EventMixin: wire gauge auto-fill (gauge_autofill.py) ---
+    # Needs InvenTree's "Enable event integration" plugin setting and the
+    # background worker. Only parameter-save events are taken.
+
+    def wants_process_event(self, event):
+        from .gauge_autofill import EVENTS
+        return event in EVENTS
+
+    def process_event(self, event, *args, **kwargs):
+        from .gauge_autofill import process_gauge_event
+        process_gauge_event(self, event, **kwargs)
+
+    # --- ValidationMixin: gauge values (gauge_autofill.validate_gauge_value) ---
+
+    def validate_parameter(self, parameter, data):
+        from .gauge_autofill import validate_gauge_value
+        return validate_gauge_value(self, parameter, data)
+
+    def _is_connector(self, part):
+        """Component Type = Connector (OMG's template name), or it already has a cavity map."""
+        from .inventree_native_lookup import get_part_parameter_str
+        from .part_setup import _config_cache
+        roles = ((_config_cache.get("data") or {}).get("roles") or {})
+        type_name = (roles.get("part.component_type") or {}).get("template") or "Component Type"
+        if (get_part_parameter_str(part, type_name) or "").strip().lower() == "connector":
+            return True
+        for role, default in (("connector.cavity_map", "Cavity Map"), ("connector.cavity_groups", "Cavity Groups")):
+            name = (roles.get(role) or {}).get("template") or default
+            if get_part_parameter_str(part, name):
+                return True
+        return False
 
     def setup_urls(self):
         from . import api
@@ -204,6 +254,26 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
         part = Part.objects.filter(pk=context["target_id"]).first()
         if not part:
             return panels
+
+        # "OMG Part Setup" on every non-assembly part (wires, connectors,
+        # contacts, seals, blanks): pick a Component Type, fill in what it
+        # needs. "OMG Cavities" on connectors - Component Type is read from
+        # the part with OMG's template name (cached; falls back to showing
+        # it whenever the part has a Cavity Map / Cavity Groups parameter).
+        if not part.assembly:
+            panels.append({
+                "key": "omg-part-setup",
+                "title": "OMG Part Setup",
+                "icon": "ti:list-check:outline",
+                "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGPartSetupPanel"),
+            })
+            if self._is_connector(part):
+                panels.append({
+                    "key": "omg-cavities",
+                    "title": "OMG Cavities",
+                    "icon": "ti:grid-dots:outline",
+                    "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGCavityPanel"),
+                })
 
         is_omg_harness = (get_part_parameter_str(part, HARNESS_MARKER_PARAM) or "").strip().lower() == "true"
 

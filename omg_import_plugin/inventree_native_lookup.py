@@ -1,10 +1,8 @@
 """
 Part parameters from inside InvenTree (ORM), for the few places the plugin
-still reads or writes them - working on both InvenTree parameter systems:
-
-  InvenTree 1.1 and earlier: part.models.PartParameter / PartParameterTemplate
-  InvenTree 1.2+:            common.models.Parameter / ParameterTemplate,
-                             attached to any model by (model_type, model_id)
+reads or writes them. InvenTree 1.2+ parameters only: common.models.Parameter /
+ParameterTemplate, attached to a part by (model_type = Part, model_id = pk).
+(InvenTree 1.1's part.models.PartParameter is gone - this plugin needs 1.2+.)
 
 Which parameter NAMES to use is no longer configured here: OMG owns the
 part-parameter mapping (OMG > InvenTree Settings > Part Parameters) and
@@ -27,53 +25,43 @@ DEFAULT_PARAMETER_NAMES = {
 }
 
 
-def _parameter_models():
-    """
-    (ParameterTemplate model, Parameter model, generic) for this InvenTree:
-    generic=True on 1.2+ (common.models, keyed by model_type/model_id),
-    False on 1.1 (part.models.PartParameter*, keyed by part).
-    """
-    try:
-        from part.models import PartParameter, PartParameterTemplate  # InvenTree 1.1 and earlier
-        return PartParameterTemplate, PartParameter, False
-    except ImportError:
-        from common.models import Parameter, ParameterTemplate        # InvenTree 1.2+
-        return ParameterTemplate, Parameter, True
-
-
 def _part_content_type():
     from django.contrib.contenttypes.models import ContentType
     from part.models import Part
     return ContentType.objects.get_for_model(Part)
 
 
+def parameter_template(name):
+    """The ParameterTemplate called `name` (case-insensitive), or None."""
+    from common.models import ParameterTemplate
+    return ParameterTemplate.objects.filter(name__iexact=name).first()
+
+
+def part_parameter_lookup(part, template):
+    """Filter kwargs for one part's value of one template."""
+    return {"model_type": _part_content_type(), "model_id": part.pk, "template": template}
+
+
 def get_part_parameter_str(part, param_name):
     """A part parameter's raw value by template name (case-insensitive), or None if unset."""
-    # part.parameters exists on both versions (1.1: related manager; 1.2+: property)
     param = part.parameters.filter(template__name__iexact=param_name).first()
     return param.data.strip() if param and param.data else None
 
 
 def set_part_parameter(part, param_name, value, description=""):
-    """Set a part parameter (creating its template if needed) - both InvenTree versions."""
-    Template, Parameter, generic = _parameter_models()
-    template = Template.objects.filter(name__iexact=param_name).first()
+    """Set a part parameter (creating its template if needed)."""
+    from common.models import Parameter, ParameterTemplate
+    template = parameter_template(param_name)
     if template is None:
-        template = Template.objects.create(name=param_name, description=description)
-    if generic:
-        Parameter.objects.update_or_create(model_type=_part_content_type(), model_id=part.pk, template=template,
-                                           defaults={"data": str(value)})
-    else:
-        Parameter.objects.update_or_create(part=part, template=template, defaults={"data": str(value)})
+        template = ParameterTemplate.objects.create(name=param_name, description=description)
+    Parameter.objects.update_or_create(**part_parameter_lookup(part, template), defaults={"data": str(value)})
 
 
 def find_parts_by_parameter_native(template_name, value):
-    """Part pks with parameter template_name = value (both case-insensitive) - both InvenTree versions."""
-    _Template, Parameter, generic = _parameter_models()
-    rows = Parameter.objects.filter(template__name__iexact=template_name, data__iexact=str(value))
-    if generic:
-        return set(rows.filter(model_type=_part_content_type()).values_list("model_id", flat=True))
-    return set(rows.values_list("part_id", flat=True))
+    """Part pks with parameter template_name = value (both case-insensitive)."""
+    from common.models import Parameter
+    return set(Parameter.objects.filter(template__name__iexact=template_name, data__iexact=str(value),
+                                        model_type=_part_content_type()).values_list("model_id", flat=True))
 
 
 def find_conductor_candidates_native(size=None, conductor_type=None, primary_color=None, secondary_color=None,

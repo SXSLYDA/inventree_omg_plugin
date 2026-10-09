@@ -1,20 +1,26 @@
 {
     "src/Panel.tsx":  {
-                          "file":  "Panel-BbBZlui_.js",
+                          "file":  "Panel-CiKFqfSp.js",
                           "name":  "Panel",
                           "src":  "src/Panel.tsx",
                           "isEntry":  true
                       },
     "src/SOExportPanel.tsx":  {
-                                  "file":  "SOExportPanel-UbxVf3HB.js",
+                                  "file":  "SOExportPanel-C4TEh1fk.js",
                                   "name":  "SOExportPanel",
                                   "src":  "src/SOExportPanel.tsx",
                                   "isEntry":  true
                               },
     "src/ImportHarnessPanel.tsx":  {
-                                       "file":  "ImportHarnessPanel-cavXfZA7.js",
+                                       "file":  "ImportHarnessPanel-l-wfZ8IR.js",
                                        "name":  "ImportHarnessPanel",
                                        "src":  "src/ImportHarnessPanel.tsx",
                                        "isEntry":  true
-                                   }
+                                   },
+    "src/PartSetupPanel.tsx":  {
+                                   "file":  "PartSetupPanel-D7LMCljD.js",
+                                   "name":  "PartSetupPanel",
+                                   "src":  "src/PartSetupPanel.tsx",
+                                   "isEntry":  true
+                               }
 }

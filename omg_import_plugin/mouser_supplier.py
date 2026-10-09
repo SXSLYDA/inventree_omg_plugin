@@ -32,9 +32,8 @@ from mouser_lookup import search_by_mpn
 logger = logging.getLogger(__name__)
 
 # InvenTree's own SupplierMixin.download_image() calls
-# download_image_from_url() with its defaults: no User-Agent unless the
-# INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT setting is filled in (blank by
-# default, so requests go out as "python-requests/x") and a 2.5 s timeout. Mouser's image
+# download_image_from_url() with its defaults: no browser User-Agent and a
+# 2.5 s timeout. Mouser's image
 # server sits behind bot protection that commonly refuses non-browser
 # clients, and a 2.5 s timeout is tight from a small droplet. These are
 # what this plugin uses instead (download_image() override below).
@@ -71,22 +70,6 @@ def _usable_image_url(value):
     if url.startswith("//"):
         url = "https:" + url
     return url if url.lower().startswith(("http://", "https://")) else ""
-
-
-def _global_setting(key):
-    """An InvenTree global setting's value, or '' if it can't be read."""
-    try:
-        from common.settings import get_global_setting
-    except ImportError:  # older InvenTree layout
-        try:
-            from common.models import InvenTreeSetting
-            return InvenTreeSetting.get_setting(key, "") or ""
-        except Exception:
-            return ""
-    try:
-        return get_global_setting(key, "") or ""
-    except Exception:
-        return ""
 
 
 def _is_public_host(hostname):
@@ -231,32 +214,20 @@ class MouserSupplierMixin(SupplierMixin):
         Download a Mouser image with a browser User-Agent. Returns
         (ContentFile, format), same as SupplierMixin.download_image().
 
-        InvenTree's download_image_from_url() differs by version:
-          - Unreleased/newer InvenTree accepts user_agent/max_size
-            arguments - passed directly.
-          - Released InvenTree (<= 1.0.x) takes only (url, timeout) and
-            reads the User-Agent from the global setting
-            INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT (Settings -> System),
-            which is blank by default = no browser User-Agent. If that
-            setting is filled in, InvenTree's downloader is used (your
-            setting wins); if it's blank, _fetch_image() downloads with a
-            browser User-Agent and the same kinds of safety checks.
-        (Passing user_agent to the released version raised "unexpected
-        keyword argument 'user_agent'" - this checks first.)
+        InvenTree's own downloader (download_image_from_url, with a browser
+        User-Agent and a size cap) first; if Mouser's bot protection refuses
+        it (it judges the whole request, not just the User-Agent),
+        _fetch_image() retries with the full set of browser headers and the
+        same kinds of safety checks.
         """
-        import inspect
         from django.core.files.base import ContentFile
         from InvenTree.helpers_model import download_image_from_url
 
-        params = inspect.signature(download_image_from_url).parameters
-        if "user_agent" in params:
-            kwargs = {"timeout": IMAGE_TIMEOUT_SECONDS, "user_agent": IMAGE_USER_AGENT}
-            if "max_size" in params:
-                kwargs["max_size"] = IMAGE_MAX_BYTES
-            img = download_image_from_url(img_url, **kwargs)
-        elif _global_setting("INVENTREE_DOWNLOAD_FROM_URL_USER_AGENT"):
-            img = download_image_from_url(img_url, timeout=IMAGE_TIMEOUT_SECONDS)
-        else:
+        try:
+            img = download_image_from_url(img_url, timeout=IMAGE_TIMEOUT_SECONDS, user_agent=IMAGE_USER_AGENT,
+                                          max_size=IMAGE_MAX_BYTES)
+        except Exception as exc:
+            logger.info("Mouser image via InvenTree's downloader failed (%s) - retrying with browser headers", exc)
             img = _fetch_image(img_url)
 
         fmt = img.format or "PNG"
