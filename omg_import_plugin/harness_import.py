@@ -235,8 +235,9 @@ def _connector_pin_data(c):
     """
     (terminal_only, used_pin_ids, pin_specs) for one OMG connector row,
     taken as OMG sends them. OMG owns the pin rules (see its
-    components/inventree_bom_export.py): "-" is never a pin, a connector
-    whose pins are all "-" is terminal_only (no contacts, no blanks), and
+    components/inventree_bom_export.py): lug symbols (- + * #) are never a
+    pin, a connector whose pins are all lug symbols is terminal_only (no
+    contacts, no blanks; its "quantity" is one lug per symbol), and
     each real pin appears once however many wires share it, with the
     wires' combined size. The plugin doesn't repeat those rules - one
     place to change them.
@@ -435,7 +436,9 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_connector(batch, c["connector_id"], c.get("label", ""), NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no))
                 continue
 
-        connector_agg[pk]["quantity"] += 1
+        # One per connector - or, for a lug, one per different lug symbol
+        # (+ and - on one battery "connector" = two lugs). OMG works it out.
+        connector_agg[pk]["quantity"] += max(1, int(c.get("quantity") or 1))
         # Every connector of this part, by its own label - not one label
         # overwritten by the last connector (flags used to name only the
         # last one, e.g. "EARTH 9" for contacts used across EARTH 1-9).
