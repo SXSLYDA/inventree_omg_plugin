@@ -9,7 +9,6 @@ from rest_framework.views import APIView
 from .models import HarnessImportJob, ImportBatch, UnresolvedImportItem
 from .omg_credentials import get_omg_credentials
 from .reconciliation import push_reconciliation_to_omg, push_reconciliation_to_omg_detailed
-from .resolve_pending import resolve_pending_parts
 from .resolver import import_harness_bom, resolve_item
 
 
@@ -335,40 +334,55 @@ class WorkOnInOmgUrlView(APIView):
 # Pending parts (Mouser-sourced components not yet in InvenTree)
 # ---------------------------------------------------------------------
 
-class ResolvePendingView(APIView):
+class DataCheckView(APIView):
     """
-    POST /plugin/omg-harness-import/resolve-pending/
-    body: {"items": [{"pending_part_id", "kind", "mpn", "mouser_data"}, ...]}
-
-    Called after OMG fetches its unresolved PendingPart list — see
-    resolve_pending.py. Automatically pushes the resulting pending-part
-    resolutions back to OMG afterward (see reconciliation.py) so OMG can
-    flip PendingPartId over to a real InventreePartId without a separate
-    manual step.
+    GET /plugin/omg-harness-import/data-check/[?refresh=1][&part=<pk>]
+    OMG's Part Data Check (OMG's components/data_check.py) - the "Needs
+    setup" tab of the OMG Parts widget, and the problems shown on a part's
+    OMG Part Setup panel. OMG keeps the last run and checks again in the
+    background on refresh=1 (it reads every part from InvenTree, so never
+    while this request waits); poll until "running" is false.
     """
     permission_classes = [IsAuthenticated]
 
+    def get(self, request):
+        from .part_setup import omg_call
+        params = {k: request.query_params[k] for k in ("refresh", "part") if request.query_params.get(k)}
+        data, error = omg_call("get", "/api/parts/data-check/", params=params)
+        if error:
+            return Response({"report": None, "running": False, "checked_at": None, "error": error})
+        return Response(data)
+
+
+class PendingPartsView(APIView):
+    """
+    GET  /plugin/omg-harness-import/pending-parts/ - the "Mouser Import -
+         Pending Parts" dashboard item's list (pending_parts.pending_state).
+    POST /plugin/omg-harness-import/pending-parts/ {"ids": [...]} - import
+         them into the pending category (pending_parts.import_pending).
+         Needs permission to add parts.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from plugin.registry import registry
+        from .pending_parts import pending_state
+        return Response(pending_state(registry.get_plugin("omg-harness-import")))
+
     def post(self, request):
-        items = request.data.get("items", [])
-        category_map = request.data.get("category_map", {})
-        results = resolve_pending_parts(items, category_map=category_map)
-
-        resolved = [
-            {"pending_part_id": r["pending_part_id"], "inventree_pk": r["inventree_pk"]}
-            for r in results if r["inventree_pk"]
-        ]
-        reconciliation_pushed = True
-        if resolved:
-            # This batch has no single harness_part_number (pending parts
-            # can span multiple harnesses), so root_part_number is a
-            # placeholder — push_reconciliation_to_omg only actually uses
-            # resolved_pending_parts here, not per-harness flags.
-            from .models import ImportBatch as _Batch
-            fake_batch = _Batch(root_part_number="(pending-part sync)")
-            fake_batch.items = UnresolvedImportItem.objects.none()
-            reconciliation_pushed = push_reconciliation_to_omg(fake_batch, resolved_pending_parts=resolved)
-
-        return Response({"results": results, "reconciliation_pushed": reconciliation_pushed})
+        from plugin.registry import registry
+        from .pending_parts import import_pending, pending_state
+        if not (request.user.is_superuser or request.user.has_perm("part.add_part")):
+            return Response({"detail": "You don't have permission to add parts."}, status=status.HTTP_403_FORBIDDEN)
+        ids = request.data.get("ids") or []
+        if not isinstance(ids, list) or not ids:
+            return Response({"detail": "Pick at least one pending part."}, status=status.HTTP_400_BAD_REQUEST)
+        plugin = registry.get_plugin("omg-harness-import")
+        try:
+            result = import_pending(plugin, ids, request.user)
+        except ValueError as exc:
+            return Response({"detail": str(exc)}, status=status.HTTP_400_BAD_REQUEST)
+        return Response({**result, "state": pending_state(plugin)})
 
 
 # ---------------------------------------------------------------------
@@ -611,7 +625,8 @@ urlpatterns = [
     path("batches/latest/", LatestBatchForPartView.as_view(), name="omg-batch-latest"),
     path("work-on-url/", WorkOnInOmgUrlView.as_view(), name="omg-work-on-url"),
     path("batches/<int:batch_id>/", BatchDetailView.as_view(), name="omg-batch-detail"),
-    path("resolve-pending/", ResolvePendingView.as_view(), name="omg-resolve-pending"),
+    path("pending-parts/", PendingPartsView.as_view(), name="omg-pending-parts"),
+    path("data-check/", DataCheckView.as_view(), name="omg-data-check"),
     path("harness-search/", HarnessSearchProxyView.as_view(), name="omg-harness-search"),
     path("import-harness/", HarnessImportView.as_view(), name="omg-import-harness"),
     path("import-harness/jobs/<int:job_id>/", HarnessImportJobView.as_view(), name="omg-import-harness-job"),

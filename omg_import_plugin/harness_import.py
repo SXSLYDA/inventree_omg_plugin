@@ -8,12 +8,12 @@ Design decisions worth knowing about before you wire this in:
 1. Pending parts (OMG components not yet in InvenTree) are FLAGGED, not
    silently skipped or auto-created here. This function's job is to
    build the harness's BOM from what's ALREADY resolvable in InvenTree —
-   resolving pending parts is resolve_pending.py's job (run that first,
-   or this will flag every pending connector/conductor every time).
+   pending parts are imported from the "Mouser Import - Pending Parts"
+   dashboard item (pending_parts.py) - until then they're flagged here.
 
 2. Contacts and blanks are worked out by OMG (its components/wire_ends.py:
    each wire end's contact from the connector's related parts, by wire
-   size and cavity group, one per pin; blanks from the Cavity Layout) and
+   size and cavity group, one per pin; blanks from the Cavity Map) and
    arrive finished in payload["part_logic"] - this file adds those BOM
    lines and flags OMG's issues (_apply_omg_part_logic). It no longer
    chooses contacts or blanks itself, and has no parameter-name settings:

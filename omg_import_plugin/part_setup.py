@@ -9,7 +9,10 @@ Backend for the two part panels (PartSetupPanel.tsx):
   OMG Cavities    - a connector's Cavity Map as a grid (cavities, series,
                     sealing, max OD), plus which contacts / seals / blanks
                     are its related parts, with InvenTree's parts of each
-                    series offered to add.
+                    series offered to add. The map is the one list of the
+                    connector's cavities - ranges (1-12, A-D) or single ones
+                    (A, B, C, E) - and saving it sets Contact Count to match.
+                    Series come from the Contact Series selection list.
 
 What a type needs, the template names, AWG table and colour list all come
 from OMG (/api/parts/part-profiles/), and the Cavity Map is read and written
@@ -34,6 +37,8 @@ from rest_framework.views import APIView
 from .gauge_autofill import awg_for_mm2, mm2_for_awg, normalise_awg
 from .inventree_native_lookup import (_part_content_type, get_part_parameter_str, parameter_template,
                                       part_parameter_lookup)
+from .selection_lists import list_values, role_list, snap
+from .selection_match import suggest
 
 logger = logging.getLogger("inventree")
 
@@ -143,6 +148,12 @@ def _clean_value(role, raw, config):
     if role in config.get("colour_roles", []):
         key = re.sub(r"[\s_/\-]+", "", value).upper()
         return _colour_lookup(config.get("colours")).get(key, value), None
+    meta = role_list(config, role)
+    if meta:
+        # The list's own spelling for a typed "dt" / "dt-16" (case, spaces,
+        # dashes only - anything else is left for InvenTree / the item check
+        # to refuse with a clear message).
+        value, _unknown = snap(value, list_values(meta.get("list")), per_item=meta.get("per_item"), exact=True)
     return value, None
 
 
@@ -172,8 +183,13 @@ def part_setup_state(part, config):
             "label": meta.get("label", role),
             "units": (getattr(template, "units", "") or meta.get("units", "")) if template else meta.get("units", ""),
             "exists": template is not None,
-            "choices": [c.strip() for c in str(getattr(template, "choices", "") or "").split(",") if c.strip()]
-            if template else [],
+            # Enforced values (the template's own choices or its linked
+            # selection list) - a dropdown.
+            "choices": list(template.get_choices()) if template else [],
+            # OMG's list for this role, not enforced on the template (yet,
+            # or several values per part) - offered, still free to type.
+            "suggestions": list_values((role_list(config, role) or {}).get("list")) if template else [],
+            "per_item": bool((role_list(config, role) or {}).get("per_item")),
             "value": get_part_parameter_str(part, name) if template else None,
         }
     missing = []
@@ -190,6 +206,7 @@ def part_setup_state(part, config):
         "colours": [row[0] for row in config.get("colours") or []],
         "colour_roles": config.get("colour_roles", []),
         "awg_roles": config.get("awg_roles", []),
+        "accessory_types": config.get("accessory_types", []),
     }
 
 
@@ -337,14 +354,50 @@ def cavity_state(part, config, extra_series=None):
         "by_series": by_series,
         "series_keys": {k: v for k, v in series_keys.items() if k in set(series)},
         "sealings": answers.get("sealings") or [],
+        "cavities": answers.get("cavities") or [],
+        # Contact Series is picked from OMG's selection list, so a cavity's
+        # series is always spelt like the contacts' own (no "DT16" vs "DT-16")
+        "series_choices": _series_choices(config),
     }, None
+
+
+def _series_choices(config):
+    """The Contact Series selection list's values ([] if OMG hasn't set the list up yet)."""
+    return list_values((role_list(config, "part.contact_series") or {}).get("list"))
+
+
+def _snap_series(config, rows):
+    """
+    (rows with each series in the list's own spelling, errors) - a series
+    that isn't in the Contact Series list is refused, so a cavity can never
+    name a series no contact has. No list yet = rows unchanged.
+    """
+    choices = _series_choices(config)
+    if not choices:
+        return rows, []
+    out, errors = [], []
+    for i, row in enumerate(rows, start=1):
+        series = str(row.get("series") or "").strip()
+        if series:
+            snapped, unknown = snap(series, choices, exact=True)
+            if unknown:
+                hint = suggest(series, choices)
+                errors.append(f"Row {i}: '{series}' isn't in the Contact Series list"
+                              + (f" - did you mean '{hint}'?" if hint else "")
+                              + " (add it on OMG's InvenTree Settings page, Selection Lists).")
+            row = {**row, "series": snapped}
+        out.append(row)
+    return out, errors
 
 
 def save_cavities(part, config, rows, related_add, related_remove):
     """Write the Cavity Map parameter and add / remove related parts. Returns errors (list)."""
     from django.core.exceptions import ValidationError
     from part.models import Part, PartRelated
-    answers, error = omg_rules(format_cavity_map=rows or [])
+    rows, errors = _snap_series(config, rows or [])
+    if errors:
+        return errors
+    answers, error = omg_rules(format_cavity_map=rows)
     if error:
         return [error]
     text, errors = answers["formatted"]["text"], answers["formatted"]["errors"]
@@ -357,9 +410,21 @@ def save_cavities(part, config, rows, related_add, related_remove):
     if len(text) > 500:
         return ["The cavity map is longer than InvenTree's 500-character parameter limit - "
                 "combine rows into ranges (e.g. 1-12)."]
+    # Contact Count = how many cavities the map names (ranges expanded), so
+    # the two can never disagree. The map is the one place cavities are entered.
+    parsed, error = omg_rules(parse_cavity_map=text)
+    if error:
+        return [error]
+    cavity_count = len(parsed.get("cavities") or [])
+    count_template = _template(_role_template(config, "connector.contact_count"))
+    if count_template is None and cavity_count:
+        return [f"No '{_role_template(config, 'connector.contact_count')}' parameter template in InvenTree - create "
+                f"it (OMG > InvenTree Settings > Part Parameters can) and try again."]
     try:
         with transaction.atomic():
             _set_parameter(part, template, text)
+            if count_template is not None:
+                _set_parameter(part, count_template, cavity_count or "")
             current = {p.pk for p in _related_parts(part)}
             for pk in related_add or []:
                 if int(pk) not in current and int(pk) != part.pk:

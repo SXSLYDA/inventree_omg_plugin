@@ -1,8 +1,8 @@
 """
 The "catch to ensure the harness is set correctly in OMG" — after an
 import/update runs (harness_import.py), a human resolves a flagged item
-(api.py's ResolveItemView), or resolve_pending.py resolves a batch of
-pending parts, this pushes several things back to OMG:
+(api.py's ResolveItemView), or pending_parts.py imports OMG's pending
+parts, this pushes several things back to OMG:
 
 1. resolved_pending_parts: [{"pending_part_id", "inventree_pk"}] — so OMG
    can flip its Connector/WiringDiagram rows over from PendingPartId to
@@ -52,7 +52,7 @@ def push_reconciliation_to_omg(batch, resolved_pending_parts=None, resolved_matc
 def push_reconciliation_to_omg_detailed(batch, resolved_pending_parts=None, resolved_matches=None):
     """
     batch: an ImportBatch (from harness_import.import_or_update_harness_bom,
-           resolve_pending.resolve_pending_parts, or the batch a
+           a stand-in naming one harness for pending_parts.import_pending, or the batch a
            human-resolved UnresolvedImportItem belongs to).
     resolved_pending_parts: optional list of {"pending_part_id", "inventree_pk"[, "mpn"]}
            - with "mpn", OMG only resolves the pending part if it's still

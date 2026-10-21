@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Badge, Button, Checkbox, Group, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Autocomplete, Badge, Button, Checkbox, Group, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
@@ -13,6 +13,81 @@ import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui
 // What each type needs, template names, AWG sizes and colours come from OMG.
 
 const PLUGIN = '/plugin/omg-harness-import';
+
+// ==================== This part's problems (OMG's Part Data Check) ====================
+// The same check as the OMG Parts widget's "Needs setup" tab, for this one
+// part. OMG keeps the last run; "Check again" asks it to re-check in the
+// background (it reads every part from InvenTree) and this polls until done.
+
+interface PartIssue { part: number; message: string; used_by: { harness: string; what: string }[]; used_count: number; }
+interface PartCheck { key: string; title: string; issues: PartIssue[]; }
+interface PartCheckState {
+    report: { checks: PartCheck[] } | null;
+    checked_at: string | null;
+    running: boolean;
+    error: string;
+}
+
+function PartDataCheck({ context, partId }: { context: InvenTreePluginContext; partId: number }) {
+    const [stored, setStored] = useState<PartCheckState | null>(null);
+
+    const load = useCallback(async (refresh = false) => {
+        try {
+            const params: Record<string, string | number> = { part: partId };
+            if (refresh) params.refresh = 1;
+            const response = await context.api.get(`${PLUGIN}/data-check/`, { params });
+            setStored(response.data);
+        } catch {
+            setStored(null);
+        }
+    }, [context.api, partId]);
+
+    useEffect(() => { load(); }, [load]);
+    useEffect(() => {
+        if (!stored?.running) return;
+        const timer = setTimeout(() => load(), 3000);
+        return () => clearTimeout(timer);
+    }, [stored, load]);
+
+    if (!stored) return null;
+    const issues = (stored.report?.checks || []).flatMap((c) => c.issues.map((i) => ({ ...i, title: c.title })));
+    const when = stored.checked_at ? new Date(stored.checked_at).toLocaleString() : null;
+    const used = issues.find((i) => i.used_count);
+    const recheck = (
+        <Button size="compact-xs" variant="subtle" onClick={() => load(true)} loading={stored.running}>Check again</Button>
+    );
+
+    if (stored.running && !issues.length) {
+        return <Group gap="xs"><Loader size="xs" /><Text size="xs" c="dimmed">OMG is checking every part...</Text></Group>;
+    }
+    if (!stored.report) {
+        return <Group gap="xs"><Text size="xs" c="dimmed">{stored.error || "OMG hasn't checked parts yet."}</Text>{recheck}</Group>;
+    }
+    if (!issues.length) {
+        return (
+            <Group gap="xs">
+                <Badge color="green" variant="light">OMG data check: OK</Badge>
+                <Text size="xs" c="dimmed">{when ? `checked ${when}` : ''}</Text>{recheck}
+            </Group>
+        );
+    }
+    return (
+        <Alert color="orange" title={`OMG data check: ${issues.length} problem${issues.length === 1 ? '' : 's'} on this part`}>
+            <Stack gap={2}>
+                {issues.map((i) => <Text key={`${i.title}-${i.message}`} size="xs"><b>{i.title}:</b> {i.message}</Text>)}
+                {used && (
+                    <Text size="xs" c="dimmed">
+                        Used on {used.used_by.slice(0, 3).map((u) => `${u.harness} (${u.what})`).join(', ')}
+                        {used.used_count > 3 ? ` and ${used.used_count - 3} more` : ''}.
+                    </Text>
+                )}
+                <Group gap="xs">
+                    <Text size="xs" c="dimmed">{when ? `Checked ${when} - fix below, then check again.` : ''}</Text>{recheck}
+                </Group>
+            </Stack>
+        </Alert>
+    );
+}
 
 function apiError(error: any, fallback: string): string {
     const data = error?.response?.data;
@@ -29,6 +104,8 @@ interface FieldInfo {
     units: string;
     exists: boolean;
     choices: string[];
+    suggestions: string[];   // OMG's selection list, not enforced on the template
+    per_item: boolean;       // can hold several values ("DT, DTM")
     value: string | null;
 }
 
@@ -50,6 +127,7 @@ interface SetupState {
     colours: string[];
     colour_roles: string[];
     awg_roles: string[];
+    accessory_types: string[];
 }
 
 function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
@@ -133,8 +211,22 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
         if (state.awg_roles.includes(role)) {
             return <Select key={role} {...common} data={state.standard_awg} value={value || null} onChange={set} searchable clearable />;
         }
+        // Several values (an accessory's Connector Series, "DT, DTM") - pick
+        // as many as fit from OMG's list; anything already typed stays shown.
+        const listValues = field.choices.length ? field.choices : (field.suggestions || []);
+        if (field.per_item && listValues.length && (state.accessory_types || []).includes(componentType)) {
+            const picked = value.split(/[,;]/).map((v) => v.trim()).filter(Boolean);
+            const data = [...picked.filter((v) => !listValues.includes(v)), ...listValues];
+            return <MultiSelect key={role} {...common} data={data} value={picked} searchable clearable
+                                onChange={(v) => set(v.join(', '))} />;
+        }
         if (field.choices.length) {
-            return <Select key={role} {...common} data={field.choices} value={value || null} onChange={set} clearable />;
+            const data = value && !field.choices.includes(value) ? [value, ...field.choices] : field.choices;
+            return <Select key={role} {...common} data={data} value={value || null} onChange={set} searchable clearable />;
+        }
+        if (field.suggestions?.length) {
+            return <Autocomplete key={role} {...common} data={field.suggestions} value={value} onChange={set}
+                                 placeholder="Pick from the list, or type" />;
         }
         return <TextInput key={role} {...common} value={value} onChange={(e) => set(e.currentTarget.value)} />;
     };
@@ -145,6 +237,7 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
                 <Title order={4}>OMG Part Setup</Title>
                 <Button size="xs" variant="subtle" onClick={() => load(true)}>Reload from OMG</Button>
             </Group>
+            <PartDataCheck context={context} partId={Number(partId)} />
             <Text size="sm" c="dimmed">
                 Pick what this part is, then fill in what OMG needs for it. Gauge mm² and AWG fill each
                 other in from OMG's AWG / mm² table; colours use OMG's colour list.
@@ -219,6 +312,8 @@ interface CavityState {
     related: PartInfo[];
     by_series: Record<string, PartInfo[]>;
     series_keys: Record<string, string>;    // series as written -> OMG's comparison key
+    series_choices: string[];               // the Contact Series selection list
+    cavities: string[];                     // every cavity the saved map names
     sealings: string[];
 }
 
@@ -331,8 +426,10 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
         <Stack gap="sm">
             <Title order={4}>OMG Cavities</Title>
             <Text size="sm" c="dimmed">
-                Which contact series each range of cavities takes, how it's sealed, and the largest wire
-                insulation OD it accepts. OMG picks each wire end's contact, seal and every unused
+                Every cavity this connector has - as ranges (1-12, A-D) or single cavities (A, B, C, E) -
+                with the contact series it takes, how it's sealed, and the largest wire insulation OD it
+                accepts. This is the one list of cavities: OMG's pinout (empty cavities), blanks and
+                Contact Count all come from it. OMG picks each wire end's contact, seal and every unused
                 cavity's blank from the related parts of that series.
             </Text>
             {!state.map_template_exists && (
@@ -353,10 +450,18 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                         const blanks = relatedOfSeries(row.series, 'Blank');
                         return (
                             <Table.Tr key={i}>
-                                <Table.Td><TextInput size="xs" value={row.cavities} placeholder="1-12, A-D"
+                                <Table.Td><TextInput size="xs" value={row.cavities} placeholder="1-12, or A, B, C, E"
                                     onChange={(e) => setRow(i, { cavities: e.currentTarget.value })} /></Table.Td>
-                                <Table.Td><TextInput size="xs" value={row.series} placeholder="e.g. DT-16"
-                                    onChange={(e) => setRow(i, { series: e.currentTarget.value })} /></Table.Td>
+                                <Table.Td>{(state.series_choices || []).length
+                                    // From the Contact Series list, so it always matches the contacts' own spelling
+                                    ? <Select size="xs" searchable placeholder="Contact series"
+                                        data={row.series && !state.series_choices.includes(row.series)
+                                            ? [row.series, ...state.series_choices] : state.series_choices}
+                                        value={row.series || null} onChange={(v) => setRow(i, { series: v || '' })}
+                                        error={row.series && !state.series_choices.includes(row.series)
+                                            ? 'Not in the Contact Series list' : undefined} />
+                                    : <TextInput size="xs" value={row.series} placeholder="e.g. DT-16"
+                                        onChange={(e) => setRow(i, { series: e.currentTarget.value })} />}</Table.Td>
                                 <Table.Td><Select size="xs" data={state.sealings} value={row.sealing || 'none'}
                                     onChange={(v) => setRow(i, { sealing: v ?? 'none' })} allowDeselect={false} /></Table.Td>
                                 <Table.Td><TextInput size="xs" value={row.max_od} placeholder="optional"
@@ -384,6 +489,9 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                 <Button size="xs" variant="light" onClick={lookUp}>Find parts for these series</Button>
             </Group>
             <Text size="xs" c="dimmed">Cavity Map: {preview || '(empty)'}</Text>
+            <Text size="xs" c="dimmed">Saved map: {(state.cavities || []).length} cavities
+                {(state.cavities || []).length ? ` (${state.cavities.join(', ')})` : ''} - saving sets Contact
+                Count to the number of cavities in the map.</Text>
 
             {seriesList.map((series) => {
                 const parts = (bySeries[keyOf(series)] || []).filter((p) =>

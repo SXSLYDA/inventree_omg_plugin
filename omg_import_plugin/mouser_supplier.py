@@ -316,11 +316,29 @@ class MouserSupplierMixin(SupplierMixin):
         }
 
     def get_parameters(self, data):
-        return [
-            supplier.ImportParameter(name=name, value=value)
-            for name, value in (data.get("attributes") or {}).items()
-            if value
-        ]
+        """
+        OMG's parameters first (Component Type, gauges, colours, contact
+        count, series, side... under OMG's template names - see
+        mouser_parameters.py), then Mouser's own attributes. InvenTree's
+        wizard shows them all on its Parameters step to check before saving;
+        a Mouser attribute that names the same template as an OMG one is
+        dropped, so the OMG value is the one offered.
+        """
+        params, seen = [], set()
+        try:
+            from .mouser_parameters import omg_parameters
+            from .part_setup import omg_part_config
+            from .selection_lists import lists_for_roles
+            config, _error = omg_part_config(self)
+            for template, value in omg_parameters(data, config, lists=lists_for_roles(config)):
+                params.append(supplier.ImportParameter(name=template, value=value))
+                seen.add(template.strip().lower())
+        except Exception:   # OMG down or anything unexpected: Mouser's attributes still come through
+            logger.exception("Mouser import: couldn't work out OMG's parameters")
+        for name, value in (data.get("attributes") or {}).items():
+            if value and name.strip().lower() not in seen:
+                params.append(supplier.ImportParameter(name=name, value=value))
+        return params
 
     def import_part(self, data, *, category, creation_user):
         # REFACTORED: was get_or_create(IPN__iexact=data["mpn"], ...) — a

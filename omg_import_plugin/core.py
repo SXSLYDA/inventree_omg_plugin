@@ -127,6 +127,12 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "validator": bool,
             "default": False,
         },
+        "OMG_PENDING_CATEGORY": {
+            "name": "Pending parts category",
+            "description": "Where the 'Mouser Import - Pending Parts' dashboard item puts parts it creates for OMG, "
+                           "to be moved to their own category. Blank = 'OMG Pending Parts' is created the first time.",
+            "model": "part.partcategory",
+        },
         "AMBIGUOUS_SEARCH_LIMIT": {
             "name": "Ambiguous candidate limit",
             "description": "When a part number matches several InvenTree parts (by name/IPN containing it), "
@@ -152,7 +158,9 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
 
     def validate_parameter(self, parameter, data):
         from .gauge_autofill import validate_gauge_value
-        return validate_gauge_value(self, parameter, data)
+        from .selection_lists import validate_list_items
+        validate_gauge_value(self, parameter, data)
+        return validate_list_items(self, parameter, data)
 
     def _is_connector(self, part):
         """Component Type = Connector (OMG's template name), or it already has a cavity map."""
@@ -206,6 +214,15 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             # together, not just whichever one the person is looking at
             # in the moment.
             "options": {"width": 4, "height": 8},
+        }, {
+            "key": "omg-parts",
+            "title": "OMG Parts",
+            "description": "Pending: parts picked from Mouser in OMG that aren't in InvenTree yet - import them into "
+                           "the pending category. Needs setup: parts OMG uses that are missing what OMG needs "
+                           "(OMG's Part Data Check).",
+            "icon": "ti:package-import:outline",
+            "source": self.plugin_static_file("PendingPartsPanel.js:RenderOMGPartsDashboardItem"),
+            "options": {"width": 6, "height": 8},
         }]
 
     def get_ui_panels(self, request, context: dict, **kwargs):

@@ -105,11 +105,14 @@ click did:
 
 ```bash
 nano /etc/inventree/plugins.txt
-# add this line:
-inventree-omg-harness-import @ git+https://github.com/SXSLYDA/inventree_omg_plugin.git
+# add this line - pinned to a release tag (see "Releasing and deploying"):
+inventree-omg-harness-import @ git+https://github.com/SXSLYDA/inventree_omg_plugin.git@v0.2.0
 
 inventree run invoke update
 ```
+
+Or let `tools/server-update.sh` do it (it adds or moves the line, backs up,
+updates, restarts and checks the installed version) - see below.
 
 `invoke update` installs everything in `plugins.txt` (including
 `mouser-lookup` automatically, since it's declared as this plugin's own
@@ -119,115 +122,92 @@ files, all in one step.
 After it finishes, go to Settings → Plugins, find OmgHarnessImport, and
 activate it.
 
-## Automated deployment (GitHub Actions)
+## Releasing and deploying
 
-Every push to `main` can SSH into the droplet, ensure the plugin is
-registered in `plugins.txt` (adding it if it isn't there yet), and run
-the same two commands described above (`inventree run invoke update` +
-`inventree restart`) — automatically, no manual SSH session needed for
-routine updates.
+Releases are git tags (`vX.Y.Z`). The server's `plugins.txt` pins the plugin
+to one, and only a pushed tag deploys - a push to `master` or a branch never
+reaches InvenTree on its own.
 
-Registering the plugin is idempotent (checks for the exact line before
-appending, so re-running this on every push never creates duplicates),
-which means the same workflow works unchanged whether it's updating an
-instance that already has the plugin, or bootstrapping one that's never
-seen it before — a fresh InvenTree instance gets the line added
-automatically on its very first deploy, no manual `nano
-/etc/inventree/plugins.txt` step required first.
+### Release (Windows / PyCharm)
 
-### Setup
+1. Note what changed under `## Unreleased` in `CHANGELOG.md` as you work
+   (say when a release adds a migration).
+2. Run `.\build-and-bump.ps1` (patch), `-Bump minor`, `-Bump major` or
+   `-Version X.Y.Z`. It builds the panels (`-SkipBuild` if none changed), moves
+   setup.py's mouser_shared pin to its newest tag, checks the Python compiles,
+   bumps `omg_import_plugin/version.py`, stamps the changelog, then commits
+   "Release vX.Y.Z" and tags it. It does not push.
+3. Push the commit **and the tag** - PyCharm: Git -> Push, tick "Push tags";
+   terminal: `git push --follow-tags`.
 
-1. **Add the workflow file** at `.github/workflows/deploy.yml`:
+### What CI does with the tag (`.github/workflows/ci.yml`)
 
-   ```yaml
-   name: Deploy OMG InvenTree Plugin
+- Every push and pull request: all Python files must compile, and
+  `tools/server-update.sh` must pass shellcheck.
+- A `vX.Y.Z` tag, after those checks: the tag must match `version.py` and have
+  a `CHANGELOG.md` section; a GitHub release is published with that section as
+  its notes; and the server is updated to the tag over SSH with
+  `tools/server-update.sh`.
+- Re-run either for an existing tag: Actions -> CI -> Run workflow ->
+  `release_tag`.
 
-   on:
-     push:
-       branches: [main]
+The deploy uses the same three secrets the old `deploy.yml` did
+(`INVENTREE_HOST`, `INVENTREE_SSH_USER`, `INVENTREE_SSH_KEY`) - see "SSH key
+setup" below. Optional:
 
-   jobs:
-     deploy:
-       runs-on: ubuntu-latest
-       steps:
-         - name: SSH into droplet, ensure plugin is registered, and update
-           uses: appleboy/ssh-action@v1.0.3
-           with:
-             host: ${{ secrets.INVENTREE_HOST }}
-             username: ${{ secrets.INVENTREE_SSH_USER }}
-             key: ${{ secrets.INVENTREE_SSH_KEY }}
-             script: |
-               PLUGIN_LINE="inventree-omg-harness-import @ git+https://github.com/SXSLYDA/inventree_omg_plugin.git"
-               PLUGINS_FILE="/etc/inventree/plugins.txt"
-               grep -qxF "$PLUGIN_LINE" "$PLUGINS_FILE" 2>/dev/null || echo "$PLUGIN_LINE" >> "$PLUGINS_FILE"
+| Setting | Where | What for |
+|---|---|---|
+| `INVENTREE_SSH_KNOWN_HOSTS` secret | Secrets | Output of `ssh-keyscan <host>`, so CI checks it's really your server (otherwise it trusts the key it first sees, with a warning) |
+| `OMG_PLUGIN_DEPLOY` = `false` variable | Variables | Switch the server deploy off (releases are still published) |
+| Required reviewer on the `inventree-production` environment | Settings -> Environments | An "Approve" button before each deploy |
 
-               inventree run invoke update
-               inventree restart
-   ```
+The SSH user must be `root` or have passwordless `sudo` (the update restarts
+InvenTree).
 
-   The `PLUGINS_FILE` path above is specific to this project's own
-   deployment type (DigitalOcean's package/`packager.io` installer, per
-   this README's own "Installing on InvenTree" section) — a
-   Docker-based InvenTree install keeps `plugins.txt` somewhere under
-   `/opt/inventree/data/` instead, and this line would need updating to
-   match if this workflow is ever pointed at a Docker instance.
+### Updating the server by hand
 
-   On Windows, `.github` can't reliably be created through Explorer's
-   "New Folder" dialog (a well-known quirk with leading-dot folder
-   names) — use PowerShell instead: `mkdir .github\workflows`.
+Install the update script once on the server:
 
-2. **Generate a dedicated SSH key pair** (don't reuse a personal one) —
-   on your own machine, anywhere outside this repo:
+```bash
+sudo curl -fsSL -o /usr/local/bin/inventree-omg-update \
+     https://raw.githubusercontent.com/SXSLYDA/inventree_omg_plugin/master/tools/server-update.sh
+sudo chmod +x /usr/local/bin/inventree-omg-update
+```
+
+Then:
+
+```bash
+sudo inventree-omg-update                  # newest release
+sudo inventree-omg-update v0.2.1           # a specific release
+sudo inventree-omg-update --check-only     # installed / pinned / newest, change nothing
+sudo inventree-omg-update v0.2.0 --allow-downgrade   # roll back
+```
+
+It backs up the database and `plugins.txt`, points the plugin's line at the
+tag (adding it if missing), runs `inventree run invoke update`, restarts and
+confirms the installed version. If the update fails, `plugins.txt` is put back.
+Rolling back doesn't undo a newer release's migrations - check the changelog
+first.
+
+### SSH key setup (once)
+
+1. Generate a dedicated key pair (not a personal one), outside this repo:
 
    ```powershell
    ssh-keygen -t ed25519 -f github-deploy-key -N ""
    ```
 
-3. **Public key → the droplet.** SSH in as the same user the manual
-   commands above are run as (`root`, per this project's own droplet),
-   and append `github-deploy-key.pub`'s contents to that user's
-   `~/.ssh/authorized_keys`.
+2. Append `github-deploy-key.pub` to the server user's
+   `~/.ssh/authorized_keys` (`root` on this droplet).
+3. Repo -> Settings -> Secrets and variables -> Actions -> New repository
+   secret: `INVENTREE_HOST` (IP or domain), `INVENTREE_SSH_USER` (`root`),
+   `INVENTREE_SSH_KEY` (the whole private key file).
 
-4. **Private key → GitHub, as a secret — never the repo itself.** Repo
-   → Settings → Secrets and variables → Actions → New repository
-   secret. Add three:
+### mouser_shared
 
-   | Secret name | Value |
-   |---|---|
-   | `INVENTREE_HOST` | The droplet's IP or domain |
-   | `INVENTREE_SSH_USER` | The user from step 3 (`root`) |
-   | `INVENTREE_SSH_KEY` | Full contents of `github-deploy-key` (the private key) |
-
-5. Commit and push `.github/workflows/deploy.yml` itself — after that,
-   every future push to `main` triggers the deploy automatically.
-
-### The one thing that will bite you if forgotten
-
-**See "Known issue #3" below.** `inventree run invoke update` silently
-does nothing if `setup.py`'s version string hasn't changed since the
-last install — pip skips reinstalling an already-matching version, even
-though the underlying commit is genuinely different. This isn't unique
-to the automated workflow; it's exactly as true when run manually. But
-automation removes the moment where a person might notice the update
-finished "too fast" or double-check the file timestamps — the GitHub
-Action will report a clean, green success on every run, whether or not
-anything actually changed on the server.
-
-**Always run `build-and-bump.ps1` before pushing.** It bumps the
-version automatically as part of the build, which is exactly what
-makes each push's automated deploy actually take effect. A push that
-skips this script (e.g. a quick one-line edit made directly on
-GitHub's own web editor) will trigger a workflow run that succeeds
-without updating anything.
-
-### Verifying an automated deploy actually worked
-
-Same checks as the manual "Verifying a working install" section below
-apply here unchanged — the automation doesn't change what "working"
-looks like, only who types the commands. Additionally, `cat
-/etc/inventree/plugins.txt` should show the plugin's line present after
-the very first automated run, even on an instance that never had it
-added manually.
+`mouser-lookup` is pinned in `setup.py` to a mouser_shared release tag the same
+way. Release mouser_shared first (its own `bump-version.ps1`, push the tag);
+the next `build-and-bump.ps1` here moves the pin and notes it in the changelog.
 
 ## Known issues and how they were solved
 
@@ -290,10 +270,10 @@ Fix: force a real reinstall, bypassing the version-match skip:
   git+https://github.com/SXSLYDA/inventree_omg_plugin.git
 ```
 
-**Going forward**: either bump the version number in `setup.py` on
-every fix, or remember to use `--force-reinstall` — a plain `inventree
-run invoke update` will not pick up a code change on its own if the
-version string didn't change.
+**Solved for good by release tags**: `plugins.txt` pins
+`...inventree_omg_plugin.git@vX.Y.Z`, and each release is a new tag - a new
+install link - so pip always reinstalls (see "Releasing and deploying"). The
+bare repo URL is what let pip skip updates.
 
 ### 4. Two separate credentials, easy to conflate
 

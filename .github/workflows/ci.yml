@@ -1,0 +1,137 @@
+name: CI
+
+# Runs on every push and pull request: every Python file must compile, and the
+# server update script must pass shellcheck.
+#
+# On a release tag (vX.Y.Z, made by build-and-bump.ps1) it also checks the tag
+# matches omg_import_plugin/version.py and CHANGELOG.md, publishes a GitHub release
+# with that version's CHANGELOG.md notes, and updates InvenTree to that exact tag.
+#
+# Pushes to master or a branch DON'T deploy any more (deploy.yml used to, on every
+# push to master - with an unpinned plugins.txt line pip often skipped the update).
+# Only a tag reaches the server.
+#
+# Server deploy (on by default - it replaces deploy.yml and uses its secrets):
+#   Settings -> Secrets and variables -> Actions
+#     Secrets:   INVENTREE_HOST, INVENTREE_SSH_USER, INVENTREE_SSH_KEY (as before),
+#                INVENTREE_SSH_KNOWN_HOSTS (output of: ssh-keyscan <host>) - recommended
+#     Variables: OMG_PLUGIN_DEPLOY = false   to switch the deploy off
+#   Settings -> Environments -> inventree-production: add yourself as a required
+#   reviewer to get an "Approve" button before each deploy (optional).
+#
+# To publish a release / redeploy for an existing tag:
+#   Actions -> CI -> Run workflow -> enter the tag in "release_tag".
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "Publish a GitHub release and deploy this existing tag (e.g. v0.2.0). Leave empty for a normal run."
+        required: false
+        default: ""
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Every Python file compiles
+        run: python -m compileall -q omg_import_plugin setup.py tools
+      - name: Server update script
+        run: shellcheck -S warning tools/server-update.sh
+      - name: Release tag matches version.py and CHANGELOG.md
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.release_tag != ''
+        env:
+          TAG: ${{ inputs.release_tag || github.ref_name }}
+        run: |
+          version=$(python -c "import re; print(re.search(r'OMG_IMPORT_PLUGIN_VERSION\s*=\s*[\"\'](.+?)[\"\']', open('omg_import_plugin/version.py').read()).group(1))")
+          echo "tag ${TAG}, version.py ${version}"
+          test "${TAG}" = "v${version}" || { echo "::error::Tag ${TAG} does not match version.py (${version})"; exit 1; }
+          python tools/release_notes.py "${version}" CHANGELOG.md > /dev/null
+
+  # A release tag: a GitHub release with that version's CHANGELOG.md section as the
+  # notes. Safe to re-run: an existing release is left alone.
+  release:
+    needs: [check]
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Release notes from CHANGELOG.md
+        run: |
+          case "$TAG" in v[0-9]*.[0-9]*.[0-9]*) ;; *) echo "::error::'$TAG' is not a vX.Y.Z tag"; exit 1 ;; esac
+          git rev-parse -q --verify "refs/tags/$TAG" >/dev/null || { echo "::error::Tag $TAG does not exist"; exit 1; }
+          version="${TAG#v}"
+          # The tag's own CHANGELOG.md, so a backfilled release gets the notes as released.
+          git show "refs/tags/$TAG:CHANGELOG.md" > "$RUNNER_TEMP/CHANGELOG.md"
+          python3 tools/release_notes.py "$version" "$RUNNER_TEMP/CHANGELOG.md" > notes.md
+          cat >> notes.md <<NOTES
+
+          ---
+          **Install or update (package installer):** \`sudo inventree-omg-update ${TAG}\`
+          **Or pin in plugins.txt:** \`inventree-omg-harness-import @ git+https://github.com/${GITHUB_REPOSITORY}.git@${TAG}\`, then \`inventree run invoke update\` and \`inventree restart\`.
+          Read the notes above first: they say when a release adds a migration (which decides whether rolling back is safe).
+          NOTES
+          cat notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists - leaving it as it is."
+            exit 0
+          fi
+          gh release create "$TAG" --title "inventree_omg_plugin $TAG" --notes-file notes.md --verify-tag --latest=auto
+
+  # Updates InvenTree to the release tag (tools/server-update.sh: backup, pin
+  # plugins.txt to the tag, invoke update, restart, confirm the installed version).
+  deploy:
+    needs: [check]
+    if: (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')) && vars.OMG_PLUGIN_DEPLOY != 'false'
+    runs-on: ubuntu-latest
+    environment: inventree-production
+    concurrency:
+      group: inventree-deploy
+      cancel-in-progress: false
+    env:
+      TAG: ${{ inputs.release_tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag || github.ref }}
+      - name: SSH key
+        env:
+          SSH_KEY: ${{ secrets.INVENTREE_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.INVENTREE_SSH_KNOWN_HOSTS }}
+          HOST: ${{ secrets.INVENTREE_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          if [ -n "$KNOWN_HOSTS" ]; then
+            printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          else
+            echo "::warning::INVENTREE_SSH_KNOWN_HOSTS not set - trusting the server's key on first sight"
+            ssh-keyscan -H "$HOST" > ~/.ssh/known_hosts
+          fi
+      - name: Update the server to ${{ env.TAG }}
+        env:
+          HOST: ${{ secrets.INVENTREE_HOST }}
+          SSH_USER: ${{ secrets.INVENTREE_SSH_USER }}
+        run: |
+          # root runs it directly; any other user needs passwordless sudo
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$SSH_USER@$HOST" \
+            "if [ \"\$(id -u)\" -eq 0 ]; then bash -s -- '${TAG}'; else sudo -n bash -s -- '${TAG}'; fi" < tools/server-update.sh
