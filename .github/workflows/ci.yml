@@ -13,7 +13,7 @@ name: CI
 #
 # Server deploy (on by default - it replaces deploy.yml and uses its secrets):
 #   Settings -> Secrets and variables -> Actions
-#     Secrets:   INVENTREE_HOST, INVENTREE_SSH_USER, INVENTREE_SSH_KEY (as before),
+#     Secrets:   INVENTREE_HOST, INVENTREE_SSH_KEY (as before), INVENTREE_SSH_USER (blank = root),
 #                INVENTREE_SSH_KNOWN_HOSTS (output of: ssh-keyscan <host>) - recommended
 #     Variables: OMG_PLUGIN_DEPLOY = false   to switch the deploy off
 #   Settings -> Environments -> inventree-production: add yourself as a required
@@ -119,6 +119,7 @@ jobs:
           KNOWN_HOSTS: ${{ secrets.INVENTREE_SSH_KNOWN_HOSTS }}
         run: |
           install -m 700 -d ~/.ssh
+          [ -n "$SSH_KEY" ] || { echo "::error::The INVENTREE_SSH_KEY secret is empty or not set for this repo"; exit 1; }
           printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           if [ -n "$KNOWN_HOSTS" ]; then
@@ -138,6 +139,9 @@ jobs:
           # secrets pasted with a stray space / newline break the address
           HOST="$(printf '%s' "$HOST" | tr -d '[:space:]')"
           SSH_USER="$(printf '%s' "$SSH_USER" | tr -d '[:space:]')"
+          # INVENTREE_SSH_USER not set = root, as the old deploy.yml (appleboy/ssh-action) assumed
+          SSH_USER="${SSH_USER:-root}"
+          [ -n "$HOST" ] || { echo "::error::The INVENTREE_HOST secret is empty or not set for this repo"; exit 1; }
           # root runs it directly; any other user needs passwordless sudo
           ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking="$HOST_CHECK" \
             "$SSH_USER@$HOST" \
