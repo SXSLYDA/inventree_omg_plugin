@@ -18,9 +18,15 @@
                                        "isEntry":  true
                                    },
     "src/PartSetupPanel.tsx":  {
-                                   "file":  "PartSetupPanel-CwLapHla.js",
+                                   "file":  "PartSetupPanel-Dqya628Q.js",
                                    "name":  "PartSetupPanel",
                                    "src":  "src/PartSetupPanel.tsx",
                                    "isEntry":  true
-                               }
+                               },
+    "src/PendingPartsPanel.tsx":  {
+                                      "file":  "PendingPartsPanel-D-lOTonI.js",
+                                      "name":  "PendingPartsPanel",
+                                      "src":  "src/PendingPartsPanel.tsx",
+                                      "isEntry":  true
+                                  }
 }

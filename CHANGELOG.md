@@ -6,6 +6,8 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.2.0 — 2026-10-21
+
 First tagged release - release as a minor version (`.\build-and-bump.ps1 -Bump minor`, 0.1.32 -> 0.2.0). No new migrations.
 
 - **Releases and deploys:**
@@ -25,3 +27,4 @@ First tagged release - release as a minor version (`.\build-and-bump.ps1 -Bump m
 - **Cavities - one source:** the Cavity Map is the one list of a connector's cavities, as ranges (`1-12`, `A-D`) or single cavities (`A, B, C, E`). The cavity grid's Series is picked from the Contact Series list (a series not in it is refused), and saving sets **Contact Count** to the number of cavities in the map. Needs OMG with Cavity Layout removed. **Rebuild the panels** for this release (don't use `-SkipBuild`).
 - **New dashboard item "OMG Parts"**, two tabs. **Needs setup** shows OMG's Part Data Check: parts OMG's harnesses use that were never set up (no Component Type) or no longer exist, missing required parameters, Cavity Maps OMG can't read, Contact Count not matching the map, and cavity series no contact has - parts on a harness first, with where each is used. OMG keeps the last check and re-checks in the background ("Check again"). Each part's **OMG Part Setup** panel shows that part's own problems at the top. Needs OMG with the stored data check. **Pending (Mouser)** lists the parts picked from Mouser in OMG that aren't in InvenTree yet, with where each is used and whether InvenTree already has it. Tick and import: an exact match (name, MPN or Mouser number) is linked; anything else is created from Mouser - manufacturer part, Mouser supplier part, prices and OMG's parameters - in the **pending category** (new setting *Pending parts category*, "OMG Pending Parts" created the first time), then moved by hand to its own category. OMG is told so its pending parts become the real InvenTree parts. InvenTree's Import from Supplier wizard is unchanged. The unused `resolve-pending/` endpoint (it could never report back to OMG) is replaced by `pending-parts/`. Needs OMG with the new pending-parts list (where each part is used).
 - **Matching by manufacturer / supplier part number:** a part number that isn't an InvenTree part's name or IPN is matched by an exact MPN or SKU before the loose search - the same rule OMG uses - so accessories carrying the maker's number (Deutsch, TE ...) link in the sync. Several parts sharing it go to review.
+
