@@ -164,9 +164,11 @@ def _sync_harness_identity(batch, harness_part, harness_part_number, harness_des
         )
 
 
-def _flag_connector(batch, connector_id, label, message, candidate_pks=None):
+def _flag_connector(batch, connector_id, label, message, candidate_pks=None, quantity=1):
+    # quantity: what this connector adds to the BOM (a lug with - and + is 2),
+    # so resolving the review item creates the line with the right count.
     UnresolvedImportItem.objects.create(
-        batch=batch, part_number=label or "Connector", quantity=1,
+        batch=batch, part_number=label or "Connector", quantity=quantity,
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if candidate_pks else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=message, candidate_pks=candidate_pks or [],
         omg_object_type=UnresolvedImportItem.OmgObjectType.CONNECTOR, omg_object_id=connector_id,
@@ -258,7 +260,7 @@ def _labels_text(labels, limit=12):
     return ", ".join(unique)
 
 
-def _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks):
+def _apply_omg_part_logic(batch, part_logic, bom_totals):
     """
     Add OMG's worked-out contact and blank lines to the BOM, and flag what
     OMG couldn't resolve. OMG chose every contact (by wire size, cavity
@@ -281,8 +283,7 @@ def _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks):
                            f"{where}, but it no longer exists in InvenTree - was it deleted?"),
                 )
                 continue
-            _upsert_bom_line(harness_part, sub_part, line.get("quantity", 0))
-            seen_sub_part_pks.add(sub_part.pk)
+            _add_bom_qty(bom_totals, sub_part, line.get("quantity", 0))
 
     for issue in part_logic.get("issues", []):
         # OMG marks each issue 'error' or 'warning' (e.g. a wire's insulation
@@ -383,7 +384,12 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
             omg_bom_data.get("harness_part_number") or harness_part_number,
             omg_bom_data.get("harness_description"),
         )
-    seen_sub_part_pks = set()
+    # Every BOM quantity is added up here per InvenTree part, across ALL
+    # categories, and written once at the end. Writing each category
+    # straight to the BOM meant a part appearing twice (e.g. a lug sent as a
+    # connector AND chosen by OMG as a contact/accessory) had its count
+    # replaced by whichever category ran last.
+    bom_totals = {}
     resolved_matches = []
 
     # The harness root part itself is a "match" too, same as any
@@ -404,7 +410,8 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
     # actually have pins (need contacts / may need blanks) - what the
     # contact and blank messages name.
     connector_agg = defaultdict(lambda: {"quantity": 0, "labels": [], "pin_labels": [], "label_by_id": {},
-                                         "connector_ids": [], "instances": [], "pin_specs": []})
+                                         "connector_ids": [], "instances": [], "pin_specs": [],
+                                         "qty_by_id": {}})
     for c in omg_bom_data.get("connectors", []):
         if c.get("pending_part_id") and not c.get("inventree_pk"):
             _flag_connector(batch, c["connector_id"], c.get("label", ""),
@@ -429,16 +436,18 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_connector(
                     batch, c["connector_id"], c.get("label", ""),
                     f"'{part_no}' matches more than one InvenTree part — choose which one is correct.",
-                    candidate_pks=[p.pk for p in candidates],
+                    candidate_pks=[p.pk for p in candidates], quantity=_connector_qty(c),
                 )
                 continue
             else:
-                _flag_connector(batch, c["connector_id"], c.get("label", ""), NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no))
+                _flag_connector(batch, c["connector_id"], c.get("label", ""), NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no),
+                                quantity=_connector_qty(c))
                 continue
 
         # One per connector - or, for a lug, one per different lug symbol
         # (+ and - on one battery "connector" = two lugs). OMG works it out.
-        connector_agg[pk]["quantity"] += max(1, int(c.get("quantity") or 1))
+        connector_agg[pk]["quantity"] += _connector_qty(c)
+        connector_agg[pk]["qty_by_id"][c["connector_id"]] = _connector_qty(c)
         # Every connector of this part, by its own label - not one label
         # overwritten by the last connector (flags used to name only the
         # last one, e.g. "EARTH 9" for contacts used across EARTH 1-9).
@@ -464,14 +473,14 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
             part = Part.objects.get(pk=pk)
         except Part.DoesNotExist:
             for cid in agg["connector_ids"]:
-                _flag_connector(batch, cid, agg["label_by_id"].get(cid, ""), "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
+                _flag_connector(batch, cid, agg["label_by_id"].get(cid, ""), "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?",
+                                quantity=agg["qty_by_id"].get(cid, 1))
             continue
 
-        _upsert_bom_line(harness_part, part, agg["quantity"])
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["quantity"])
 
     if part_logic is not None:
-        _apply_omg_part_logic(batch, harness_part, part_logic, seen_sub_part_pks)
+        _apply_omg_part_logic(batch, part_logic, bom_totals)
     elif connector_agg:
         # OMG chooses contacts and blanks (its components/wire_ends.py); the
         # plugin no longer guesses them itself. Without them, say why.
@@ -560,8 +569,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                            wire_no=agg["wire_no_by_id"].get(wid))
             continue
 
-        _upsert_bom_line(harness_part, part, round(agg["length_m"], 4))
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["length_m"])
 
     multicore_agg = defaultdict(lambda: {"length_m": 0.0, "multicore_ids": []})
     for m in omg_bom_data.get("multicores", []):
@@ -584,8 +592,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_multicore(batch, mid, "", "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
             continue
 
-        _upsert_bom_line(harness_part, part, round(agg["length_m"], 4))
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["length_m"])
 
     # --- Accessories: exact match only (no wiring/pin data involved at all) ---
     accessory_agg = defaultdict(lambda: {"quantity": 0, "accessory_ids": []})
@@ -631,8 +638,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_accessory(batch, aid, "", "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
             continue
 
-        _upsert_bom_line(harness_part, part, agg["quantity"])
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["quantity"])
 
     # --- Junctions (Y-pieces, multi-way splitters): exact match only. ---
     # Quantity is always +1 per junction ROW here (not summed from a
@@ -685,8 +691,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_junction(batch, jid, "", "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
             continue
 
-        _upsert_bom_line(harness_part, part, agg["quantity"])
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["quantity"])
 
     # --- Linked sub-harnesses: one BOM line per distinct sub-harness, ---
     # --- resolved by its own PartNumber string (its own harness IPN) ---
@@ -720,8 +725,11 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
                 _flag_sub_harness(batch, lid, agg["part_no"], "OMG references this InvenTree pk but it no longer exists — was it deleted in InvenTree?")
             continue
 
-        _upsert_bom_line(harness_part, part, agg["quantity"])
-        seen_sub_part_pks.add(pk)
+        _add_bom_qty(bom_totals, part, agg["quantity"])
+
+    for part, quantity in bom_totals.values():
+        _upsert_bom_line(harness_part, part, quantity)
+    seen_sub_part_pks = set(bom_totals)
 
     stale_lines = harness_part.bom_items.exclude(sub_part_id__in=seen_sub_part_pks)
     for line in stale_lines:
@@ -775,6 +783,19 @@ def _close_superseded_review_items(harness_part, current_batch):
     )
 
 
+def _connector_qty(c):
+    """One per connector, or for a lug one per different lug symbol - OMG sends it."""
+    return max(1, int(c.get("quantity") or 1))
+
+
+def _add_bom_qty(bom_totals, part, quantity):
+    """Add to this part's running BOM total for the sync (see bom_totals)."""
+    _, total = bom_totals.get(part.pk, (part, 0))
+    bom_totals[part.pk] = (part, total + (quantity or 0))
+
+
 def _upsert_bom_line(harness_part, sub_part, quantity):
+    if isinstance(quantity, float):
+        quantity = round(quantity, 4)
     from part.models import BomItem
     BomItem.objects.update_or_create(part=harness_part, sub_part=sub_part, defaults={"quantity": quantity})
