@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.5.0 — 2026-10-22
+
+- **`inventree-omg-update` installs the plugin itself** with InvenTree's pip (output shown) before `invoke update`, which hid pip's output and left 0.2.0 installed on the 0.4.0 update. Download the command again once (see README) - the copy in `/usr/local/bin` doesn't update itself.
+
 ## 0.4.0 — 2026-10-22
 
 - **Auto-fill tab** in the OMG Parts widget: works out each part's Component Type and OMG's parameters from its description and category ("Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Red/Blue stripe" = Wire, 16 AWG / 1.5 mm², TXL, Tinned Copper, 125, Red / Blue; contact wire ranges, seal ODs, accessory ways and exit angles). Shows everything first, grouped by type, to untick; only fills parameters a part doesn't have, never overwrites. Then use OMG's "Fill lists from parts" to start the selection lists.

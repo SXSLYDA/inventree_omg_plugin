@@ -146,7 +146,27 @@ rm -f "$TMP"
 echo "$NEW_LINE"
 
 # ------------------------------------------------------------------ 4. update
-say "Updating InvenTree (install, migrate, static files)"
+say "Installing $PACKAGE $TAG"
+# Installed straight into InvenTree's venv, with pip's output shown: 'invoke update'
+# hides it, and on the v0.4.0 update it left 0.2.0 in place without an error.
+# Run as the venv's owner so the files keep the right owner.
+ENV_OWNER="$(stat -c %U "$INVENTREE_PIP")"
+PIP_RUN=("$INVENTREE_PIP" install --disable-pip-version-check --no-cache-dir --upgrade "git+$REPO@$TAG")
+if [ "$ENV_OWNER" != "root" ]; then
+    PIP_RUN=(sudo -u "$ENV_OWNER" -H "${PIP_RUN[@]}")
+fi
+if ! "${PIP_RUN[@]}"; then
+    restore_pin
+    die "pip couldn't install $TAG (output above). Nothing else was changed."
+fi
+NOW="$(installed_version)"
+if [ "$NOW" != "$TARGET" ]; then
+    restore_pin
+    die "pip finished but $PACKAGE is ${NOW:-not installed}, not $TARGET."
+fi
+ok "$PACKAGE $NOW installed."
+
+say "Updating InvenTree (migrate, static files)"
 if ! inventree run invoke update; then
     restore_pin
     die "'invoke update' failed (output above). Nothing else was changed."
