@@ -52,9 +52,11 @@ TYPE_RULES = (
     ('Blank', (r'cavity plug', r'sealing plug', r'blanking plug', r'\bdummy (?:terminal|plug)\b', r'filler plug')),
     ('Connector', (r'\bhousing\b',)),          # "Socket housing" is a connector, not a socket contact
     ('Seal', (r'\bwire seal\b', r'^seal\b', r'single wire seal\b', r'\bseal, ')),
+    # a ring lug / spade on its own: its "pins" are - + * #, no cavities
+    ('Terminal', (r'\blug\b', r'\bspade\b', r'ring terminal', r'\beyelet\b', r'fork terminal')),
     ('Contact', (r'\bsz\. ?\d', r'\bs&f\b', r'^(?:size \d+ )?(?:pin|socket|tab)\b', r'\bcontact pin\b',
                  r'connector pin\b', r'connection socket\b', r'\bfemale\b.*\d(?:mm|mm2|mm²)',
-                 r'\bconn socket\b', r'\bcrimp\b', r'\blug\b', r'\bspade\b', r'\bterminal\b',
+                 r'\bconn socket\b', r'\bcrimp\b', r'\bterminal\b',
                  r'\d(?:[.,]\d+)?\s*mm2?\s*-\s*\d(?:[.,]\d+)?\s*mm', r'\d[.,]\d+\s*-\s*\d(?:[.,]\d+)?\s*mm',
                  r'\b(?:socket|pin)$')),      # a wire-size range: "0.50MM2 - 1.00MM2"
     ('Multicore', (r'multi.?core', r'multi.?conductor', r'\bcore cable\b')),
@@ -168,7 +170,7 @@ def _proposals(part, config, lists, current):
     data = mouser_like(part, config)
     values = omg_values(data, ctype)
     text = data['description'].lower()
-    accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Contact', 'Seal', 'Blank')
+    accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Terminal', 'Contact', 'Seal', 'Blank')
     if accessory:
         if 'plug' in text and 'receptacle' in text:
             values['connector.side'] = 'Both'      # "for plug or recept."

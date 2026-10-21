@@ -6,9 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
-## 0.3.0 — 2026-10-22
+## 0.4.0 — 2026-10-22
 
 - **Auto-fill tab** in the OMG Parts widget: works out each part's Component Type and OMG's parameters from its description and category ("Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Red/Blue stripe" = Wire, 16 AWG / 1.5 mm², TXL, Tinned Copper, 125, Red / Blue; contact wire ranges, seal ODs, accessory ways and exit angles). Shows everything first, grouped by type, to untick; only fills parameters a part doesn't have, never overwrites. Then use OMG's "Fill lists from parts" to start the selection lists.
+- **New Component Type "Terminal"** (needs OMG with it) for ring lugs, spades and eyelets used on their own: no Cavity Map or Contact Count - their "pins" are the terminal symbols `- + * #`, one terminal per symbol. Just the wire range (Min / Max Gauge, checked by OMG against the wires crimped into it) and Strip Length. Auto-fill and the Mouser import recognise lugs and spades as Terminals.
 - **Part links open inside InvenTree** on the panel that fixes them - OMG Part Setup, or OMG Cavities for cavity problems - instead of a new tab that reloaded InvenTree (and checked the login) every click. Ctrl / middle-click still opens a new tab.
 - **No more "timeout of 5000ms exceeded"** in the OMG Parts widget and the OMG part panels: every call that reaches OMG (or Mouser) gets a longer timeout, like the sync panel.
 

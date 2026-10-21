@@ -438,7 +438,7 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
                                                         {Object.entries(i.values).map(([role, value]) => (
                                                             <Badge key={role} size="xs" variant={role === 'part.component_type' ? 'filled' : 'light'}
                                                                 style={{ textTransform: 'none' }}>
-                                                                {(preview.labels[role] || role).split(' (')[0]}: {value}
+                                                                {(preview.labels[role] || role).split(/ \(| - /)[0]}: {value}
                                                             </Badge>
                                                         ))}
                                                     </Group>

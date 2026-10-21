@@ -35,6 +35,8 @@ TYPE_WORDS = (
     ('Cover', (r'\bcover\b', r'\bcap\b', r'dust cap')),
     ('Seal', (r'\bseal\b', r'grommet', r'wire seal')),
     ('Blank', (r'cavity plug', r'sealing plug', r'\bblank', r'filler plug', r'dummy plug')),
+    # a ring lug / spade / eyelet used on its own (pins - + * #), not a contact in a housing
+    ('Terminal', (r'ring terminal', r'\blug\b', r'\bspade\b', r'\beyelet\b', r'quick disconnect', r'\bfork terminal')),
     ('Contact', (r'\bcontact\b', r'\bterminal\b', r'\bsocket contact', r'\bpin contact', r'crimp')),
     ('Multicore', (r'multi.?conductor', r'multicore', r'\bcable\b')),
     ('Wire', (r'\bwire\b', r'hook.?up', r'\btxl\b', r'\bgxl\b', r'\bsxl\b')),
@@ -158,7 +160,7 @@ def omg_values(data, component_type):
             values['wire.insulation_od'] = f"{float(data['outer_diameter']):g}"
         if component_type == 'Multicore':
             values['multicore.core_count'] = _num(_attr(data, 'core_count'))
-    elif component_type == 'Contact':
+    elif component_type in ('Contact', 'Terminal'):
         if 'awg_range' in gauges:
             values['contact.min_gauge'], values['contact.max_gauge'] = (f"{a} AWG" for a in gauges['awg_range'])
         elif 'awg' in gauges:
