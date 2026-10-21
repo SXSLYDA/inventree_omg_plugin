@@ -94,7 +94,8 @@ jobs:
             echo "Release $TAG already exists - leaving it as it is."
             exit 0
           fi
-          gh release create "$TAG" --title "inventree_omg_plugin $TAG" --notes-file notes.md --verify-tag --latest=auto
+          # (no --latest: gh marks the newest version "Latest" by itself; --latest=auto isn't accepted)
+          gh release create "$TAG" --title "inventree_omg_plugin $TAG" --notes-file notes.md --verify-tag
 
   # Updates InvenTree to the release tag (tools/server-update.sh: backup, pin
   # plugins.txt to the tag, invoke update, restart, confirm the installed version).
@@ -116,22 +117,28 @@ jobs:
         env:
           SSH_KEY: ${{ secrets.INVENTREE_SSH_KEY }}
           KNOWN_HOSTS: ${{ secrets.INVENTREE_SSH_KNOWN_HOSTS }}
-          HOST: ${{ secrets.INVENTREE_HOST }}
         run: |
           install -m 700 -d ~/.ssh
-          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          printf '%s\n' "$SSH_KEY" | tr -d '\r' > ~/.ssh/deploy_key
           chmod 600 ~/.ssh/deploy_key
           if [ -n "$KNOWN_HOSTS" ]; then
             printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+            echo "HOST_CHECK=yes" >> "$GITHUB_ENV"
           else
+            # No pinned key: accept the server's key on this first connection
+            # (ssh's accept-new) - ssh-keyscan here failed the job outright.
             echo "::warning::INVENTREE_SSH_KNOWN_HOSTS not set - trusting the server's key on first sight"
-            ssh-keyscan -H "$HOST" > ~/.ssh/known_hosts
+            echo "HOST_CHECK=accept-new" >> "$GITHUB_ENV"
           fi
       - name: Update the server to ${{ env.TAG }}
         env:
           HOST: ${{ secrets.INVENTREE_HOST }}
           SSH_USER: ${{ secrets.INVENTREE_SSH_USER }}
         run: |
+          # secrets pasted with a stray space / newline break the address
+          HOST="$(printf '%s' "$HOST" | tr -d '[:space:]')"
+          SSH_USER="$(printf '%s' "$SSH_USER" | tr -d '[:space:]')"
           # root runs it directly; any other user needs passwordless sudo
-          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "$SSH_USER@$HOST" \
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o ConnectTimeout=30 -o StrictHostKeyChecking="$HOST_CHECK" \
+            "$SSH_USER@$HOST" \
             "if [ \"\$(id -u)\" -eq 0 ]; then bash -s -- '${TAG}'; else sudo -n bash -s -- '${TAG}'; fi" < tools/server-update.sh
