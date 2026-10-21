@@ -294,7 +294,9 @@ def _apply_omg_part_logic(batch, part_logic, bom_totals):
         if issue.get("object_type") == "wire":
             _flag_wire(batch, issue.get("object_id"), message, wire_no=issue.get("wire_no"))
         else:
-            _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), message)
+            # quantity 0: a note about the connector, not a missing part -
+            # resolving it mustn't add anything to the BOM
+            _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), message, quantity=0)
 
 
 def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=None, target_part_pk=None):
@@ -728,7 +730,7 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
         _add_bom_qty(bom_totals, part, agg["quantity"])
 
     for part, quantity in bom_totals.values():
-        _upsert_bom_line(harness_part, part, quantity)
+        _upsert_bom_line(batch, harness_part, part, quantity)
     seen_sub_part_pks = set(bom_totals)
 
     stale_lines = harness_part.bom_items.exclude(sub_part_id__in=seen_sub_part_pks)
@@ -794,8 +796,42 @@ def _add_bom_qty(bom_totals, part, quantity):
     bom_totals[part.pk] = (part, total + (quantity or 0))
 
 
-def _upsert_bom_line(harness_part, sub_part, quantity):
+def _upsert_bom_line(batch, harness_part, sub_part, quantity):
+    """
+    Make the harness's BOM line for sub_part carry exactly OMG's quantity -
+    an existing line is corrected in place, nobody has to delete it first.
+    Anything that stops that (duplicate lines for the same part, InvenTree
+    refusing the save) goes in the review list instead of passing silently.
+    """
+    from decimal import Decimal
+    from django.core.exceptions import ValidationError
+    from part.models import BomItem
+
     if isinstance(quantity, float):
         quantity = round(quantity, 4)
-    from part.models import BomItem
-    BomItem.objects.update_or_create(part=harness_part, sub_part=sub_part, defaults={"quantity": quantity})
+    wanted = Decimal(str(quantity))
+    name = sub_part.name or sub_part.IPN or str(sub_part.pk)
+
+    lines = list(BomItem.objects.filter(part=harness_part, sub_part=sub_part).order_by("pk"))
+    try:
+        if not lines:
+            BomItem.objects.create(part=harness_part, sub_part=sub_part, quantity=wanted)
+            return
+        line = lines[0]
+        if Decimal(line.quantity) != wanted:
+            line.quantity = wanted
+            line.save()
+    except ValidationError as exc:
+        UnresolvedImportItem.objects.create(
+            batch=batch, part_number=name, quantity=0, reason=UnresolvedImportItem.Reason.NOT_FOUND,
+            notes=(f"InvenTree wouldn't set this BOM line's quantity to {wanted:g} (OMG's total): "
+                   f"{'; '.join(exc.messages)}"),
+        )
+        return
+
+    if len(lines) > 1:
+        UnresolvedImportItem.objects.create(
+            batch=batch, part_number=name, quantity=0, reason=UnresolvedImportItem.Reason.NOT_FOUND,
+            notes=(f"This harness has {len(lines)} BOM lines for this part. The first was set to OMG's total "
+                   f"({wanted:g}); delete the other {len(lines) - 1} so it isn't counted twice."),
+        )

@@ -156,10 +156,18 @@ def resolve_item(item, action, part_pk=None, notes=""):
         part = Part.objects.get(pk=part_pk)
         item.resolved_part = part
         item.resolution = UnresolvedImportItem.Resolution.LINKED if action == "link" else UnresolvedImportItem.Resolution.CREATED
-        if item.batch.root_part is not None:
-            BomItem.objects.update_or_create(
-                part=item.batch.root_part, sub_part=part, defaults={"quantity": item.quantity}
-            )
+        if item.batch.root_part is not None and item.quantity:
+            # ADD this item's quantity to the part's line rather than replacing
+            # it: the sync already wrote the total for every connector it could
+            # match, and this item is the one it couldn't - replacing used to
+            # knock e.g. a 2-terminal line back to 1. Items with quantity 0
+            # (notes and warnings, not a missing part) don't touch the BOM.
+            line = BomItem.objects.filter(part=item.batch.root_part, sub_part=part).first()
+            if line is None:
+                BomItem.objects.create(part=item.batch.root_part, sub_part=part, quantity=item.quantity)
+            else:
+                line.quantity = line.quantity + item.quantity
+                line.save()
     elif action == "dismiss":
         item.resolution = UnresolvedImportItem.Resolution.DISMISSED
     else:
