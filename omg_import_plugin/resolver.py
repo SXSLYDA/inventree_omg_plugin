@@ -43,7 +43,7 @@ from .models import ImportBatch, UnresolvedImportItem
 
 def _find_candidates(part_number):
     """
-    Exact match (name or IPN) first; fall back to a loose name/IPN
+    Exact match (name or IPN) first, then exact MPN / SKU; fall back to a loose name/IPN
     search for the ambiguous case. See module docstring for why name is
     checked at all — it's the field this project's real InvenTree usage
     actually populates, not IPN.
@@ -51,6 +51,19 @@ def _find_candidates(part_number):
     exact = list(Part.objects.filter(Q(name__iexact=part_number) | Q(IPN__iexact=part_number)))
     if exact:
         return exact
+    # Then an exact manufacturer (MPN) or supplier (SKU) part number - OMG
+    # rows often carry the maker's number (a Deutsch / TE accessory), which
+    # is never the InvenTree part's name. Same exact rule as OMG's own
+    # matching (inventree_lookup.find_by_exact_identifier), so a part OMG
+    # can link, the sync can too. Several parts sharing it -> ambiguous.
+    from company.models import ManufacturerPart, SupplierPart
+    pks = set(ManufacturerPart.objects.filter(MPN__iexact=part_number).values_list("part_id", flat=True))
+    pks |= set(SupplierPart.objects.filter(
+        Q(SKU__iexact=part_number) | Q(manufacturer_part__MPN__iexact=part_number)
+    ).values_list("part_id", flat=True))
+    pks.discard(None)
+    if pks:
+        return list(Part.objects.filter(pk__in=pks).order_by("name", "pk"))
     # Limited IN THE DATABASE (it used to load every match, then keep 10),
     # in a stable order, to the plugin's "Ambiguous candidate limit" setting
     # (which used to be ignored - 10 was hard-coded here).
