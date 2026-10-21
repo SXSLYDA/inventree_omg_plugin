@@ -13,6 +13,10 @@ import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui
 // What each type needs, template names, AWG sizes and colours come from OMG.
 
 const PLUGIN = '/plugin/omg-harness-import';
+// Every panel call reaches OMG (part profiles, rules) - often longer than the
+// 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
+const OMG_TIMEOUT_MS = 60000;
+const LONG = { timeout: OMG_TIMEOUT_MS };
 
 // ==================== This part's problems (OMG's Part Data Check) ====================
 // The same check as the OMG Parts widget's "Needs setup" tab, for this one
@@ -35,7 +39,7 @@ function PartDataCheck({ context, partId }: { context: InvenTreePluginContext; p
         try {
             const params: Record<string, string | number> = { part: partId };
             if (refresh) params.refresh = 1;
-            const response = await context.api.get(`${PLUGIN}/data-check/`, { params });
+            const response = await context.api.get(`${PLUGIN}/data-check/`, { params, ...LONG });
             setStored(response.data);
         } catch {
             setStored(null);
@@ -154,7 +158,7 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
         setLoading(true);
         try {
             const response = await context.api.get(`${PLUGIN}/part-setup/${partId}/`,
-                { params: refresh ? { refresh: '1' } : {} });
+                { params: refresh ? { refresh: '1' } : {}, ...LONG });
             apply(response.data);
         } catch (error: any) {
             setState(null);
@@ -176,7 +180,7 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
         for (const role of roles) payload[role] = values[role] ?? '';
         try {
             const response = await context.api.post(`${PLUGIN}/part-setup/${partId}/`,
-                { component_type: componentType, values: payload });
+                { component_type: componentType, values: payload }, LONG);
             apply(response.data);
             notifications.show({ color: 'green', title: 'OMG Part Setup', message: 'Saved.' });
         } catch (error: any) {
@@ -345,7 +349,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`);
+            const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`, LONG);
             apply(response.data);
         } catch (error: any) {
             setState(null);
@@ -363,7 +367,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
         if (!series.length) return;
         try {
             const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`,
-                { params: { series: series.join('|') } });
+                { params: { series: series.join('|') }, ...LONG });
             setBySeries(response.data.by_series || {});
             setSeriesKeys((old) => ({ ...old, ...(response.data.series_keys || {}) }));
         } catch (error: any) {
@@ -403,7 +407,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             const response = await context.api.post(`${PLUGIN}/cavity-setup/${partId}/`, {
                 rows: rows.map((r) => ({ cavities: r.cavities, series: r.series, sealing: r.sealing, max_od: r.max_od })),
                 related_add, related_remove,
-            });
+            }, LONG);
             apply(response.data);
             notifications.show({ color: 'green', title: 'OMG Cavities', message: 'Saved.' });
         } catch (error: any) {
@@ -591,7 +595,7 @@ function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
     const load = useCallback(async () => {
         setLoading(true);
         try {
-            const response = await context.api.get(`${PLUGIN}/accessory-setup/${partId}/`);
+            const response = await context.api.get(`${PLUGIN}/accessory-setup/${partId}/`, LONG);
             apply(response.data);
         } catch (error: any) {
             setState(null);
@@ -610,7 +614,7 @@ function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
                 kinds: rows.map((r) => ({ kind: r.kind, required: r.required, quantity: r.quantity,
                     preferred_pks: r.preferred.map(Number) })),
                 link_related: linkRelated,
-            });
+            }, LONG);
             apply(response.data);
             notifications.show({ color: 'green', title: 'OMG Accessories', message: 'Saved.' });
         } catch (error: any) {

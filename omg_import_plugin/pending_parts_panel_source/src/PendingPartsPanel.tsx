@@ -34,6 +34,28 @@ interface State {
 interface Result { id: number; mpn: string; status: string; part: PartRow | null; message: string; }
 
 const URL = '/plugin/omg-harness-import/pending-parts/';
+
+// A part link that opens INSIDE InvenTree (its router - no page reload, so no
+// login check on every click) on the right panel: OMG Part Setup, or OMG
+// Cavities for cavity problems. Ctrl / middle-click still opens a new tab.
+function PartLink({ context, pk, name, panel = 'omg-part-setup' }:
+    { context: InvenTreePluginContext; pk: number; name: string; panel?: string }) {
+    const path = `/part/${pk}/${panel}`;
+    return (
+        <Anchor size="sm" href={`/web${path}`} onClick={(e: React.MouseEvent) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            context.navigate(path);
+        }}>{name}</Anchor>
+    );
+}
+
+// Data-check problems that are fixed on the OMG Cavities panel
+const CAVITY_CHECKS = new Set(['cavity_map', 'count', 'series']);
+// These calls reach OMG (and an import reaches Mouser per part) - far longer
+// than the 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
+const READ_TIMEOUT_MS = 60000;
+const WRITE_TIMEOUT_MS = 600000;
 const STATUS_COLOUR: Record<string, string> = { created: 'green', linked: 'blue', ambiguous: 'orange', failed: 'red' };
 
 function apiError(err: any, fallback: string) {
@@ -58,7 +80,7 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
         setLoading(true);
         setLoadError(null);
         try {
-            const response = await context.api.get(URL);
+            const response = await context.api.get(URL, { timeout: READ_TIMEOUT_MS });
             setState(response.data);
             setPicked(new Set());
         } catch (err) {
@@ -81,7 +103,7 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
         setResults(null);
         setReportErrors([]);
         try {
-            const response = await context.api.post(URL, { ids: [...picked] });
+            const response = await context.api.post(URL, { ids: [...picked] }, { timeout: WRITE_TIMEOUT_MS });
             setResults(response.data.results || []);
             setReportErrors(response.data.report_errors || []);
             setState(response.data.state);
@@ -99,7 +121,7 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
 
     const items = state.items || [];
     const allPicked = items.length > 0 && picked.size === items.length;
-    const partLink = (p: PartRow) => <Anchor size="sm" href={`/web/part/${p.pk}/`} target="_blank">{p.name}</Anchor>;
+    const partLink = (p: PartRow, panel?: string) => <PartLink context={context} pk={p.pk} name={p.name} panel={panel} />;
 
     return (
         <Stack gap="xs">
@@ -186,7 +208,7 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
                 <Stack gap={2}>
                     <Text size="xs" fw={600}>Still in {state.category?.name} - move to their own category:</Text>
                     <Text size="xs">
-                        {state.in_category.map((p, n) => <span key={p.pk}>{n > 0 && ', '}{partLink(p)}</span>)}
+                        {state.in_category.map((p, n) => <span key={p.pk}>{n > 0 && ', '}{partLink(p, 'details')}</span>)}
                     </Text>
                 </Stack>
             )}
@@ -214,7 +236,8 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
 
     const load = useCallback(async (refresh = false) => {
         try {
-            const response = await context.api.get(CHECK_URL, { params: refresh ? { refresh: 1 } : {} });
+            const response = await context.api.get(CHECK_URL, { params: refresh ? { refresh: 1 } : {},
+                                                                timeout: READ_TIMEOUT_MS });
             setStored(response.data);
             setError(null);
             const checks = response.data.report?.checks || [];
@@ -238,7 +261,9 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
     const report = stored.report;
     const checks = (report?.checks || []).filter((c) => c.issues.length);
     const total = checks.reduce((n, c) => n + c.issues.length, 0);
-    const partLink = (i: CheckIssue) => <Anchor size="sm" href={`/web/part/${i.part}/`} target="_blank">{i.name}</Anchor>;
+    const partLink = (i: CheckIssue, key: string) => (
+        <PartLink context={context} pk={i.part} name={i.name} panel={CAVITY_CHECKS.has(key) ? 'omg-cavities' : 'omg-part-setup'} />
+    );
 
     return (
         <Stack gap="xs">
@@ -265,7 +290,7 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
                                 <Table.Tbody>
                                     {c.issues.map((i) => (
                                         <Table.Tr key={`${c.key}-${i.part}-${i.message}`}>
-                                            <Table.Td w="28%">{partLink(i)}</Table.Td>
+                                            <Table.Td w="28%">{partLink(i, c.key)}</Table.Td>
                                             <Table.Td><Text size="xs">{i.message}</Text></Table.Td>
                                             <Table.Td w="34%">
                                                 <Text size="xs" c={i.used_count ? undefined : 'dimmed'}>
@@ -286,6 +311,166 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
     );
 }
 
+// ==================== Auto-fill (bulk_fill.py) ====================
+
+interface FillItem {
+    part: { pk: number; name: string; description: string; category: string };
+    component_type: string;
+    type_known: boolean;
+    values: Record<string, string>;
+}
+interface FillPreview {
+    error: string | null;
+    items: FillItem[];
+    labels: Record<string, string>;
+    missing_templates: string[];
+    parts_checked: number;
+}
+
+const FILL_URL = '/plugin/omg-harness-import/bulk-fill/';
+
+function AutoFill({ context }: { context: InvenTreePluginContext }) {
+    const [preview, setPreview] = useState<FillPreview | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+    const [picked, setPicked] = useState<Set<number>>(new Set());
+    const [applying, setApplying] = useState(false);
+    const [result, setResult] = useState<{ written: number; parts: number; errors: { name: string; role: string; message: string }[] } | null>(null);
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        setError(null);
+        try {
+            const response = await context.api.get(FILL_URL, { timeout: READ_TIMEOUT_MS });
+            if (response.data.error) throw new Error(response.data.error);
+            setPreview(response.data);
+            setPicked(new Set((response.data.items || []).map((i: FillItem) => i.part.pk)));
+        } catch (err) {
+            setError(apiError(err, "Couldn't work out the values."));
+        } finally {
+            setLoading(false);
+        }
+    }, [context.api]);
+
+    const items = preview?.items || [];
+    const byType = items.reduce<Record<string, FillItem[]>>((acc, i) => {
+        (acc[i.component_type] ||= []).push(i);
+        return acc;
+    }, {});
+    const toggle = (pk: number) => setPicked((old) => {
+        const next = new Set(old);
+        next.has(pk) ? next.delete(pk) : next.add(pk);
+        return next;
+    });
+    const setGroup = (group: FillItem[], on: boolean) => setPicked((old) => {
+        const next = new Set(old);
+        group.forEach((i) => (on ? next.add(i.part.pk) : next.delete(i.part.pk)));
+        return next;
+    });
+
+    const runApply = async () => {
+        setApplying(true);
+        setResult(null);
+        try {
+            const chosen = items.filter((i) => picked.has(i.part.pk)).map((i) => ({ part: i.part.pk, values: i.values }));
+            const response = await context.api.post(FILL_URL, { items: chosen }, { timeout: WRITE_TIMEOUT_MS });
+            setResult(response.data);
+            await load();
+        } catch (err) {
+            setError(apiError(err, 'Filling the parameters failed.'));
+        } finally {
+            setApplying(false);
+        }
+    };
+
+    if (!preview) {
+        return (
+            <Stack gap="xs">
+                <Text size="xs" c="dimmed">
+                    Works out each part's Component Type and OMG's parameters from its description and category
+                    ("Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Black" = Wire,
+                    16 AWG / 1.5 mm², TXL, Black) - only for parameters a part doesn't have yet. You see everything
+                    before it's written; nothing already set is changed.
+                </Text>
+                {error && <Alert color="red">{error}</Alert>}
+                <Group><Button size="xs" onClick={load} loading={loading}>Work out values</Button></Group>
+            </Stack>
+        );
+    }
+
+    return (
+        <Stack gap="xs">
+            <Group justify="space-between">
+                <Text size="xs" c="dimmed">
+                    {items.length} of {preview.parts_checked} parts have something to fill. Untick anything that's wrong
+                    - a blank is flagged by OMG's data check, a wrong value isn't.
+                </Text>
+                <Button size="xs" variant="subtle" onClick={load} loading={loading}>Work out again</Button>
+            </Group>
+            {error && <Alert color="red">{error}</Alert>}
+            {preview.missing_templates.length > 0 && (
+                <Alert color="yellow">No InvenTree template yet for {preview.missing_templates.join(', ')} - those
+                    values will be skipped (OMG's InvenTree Settings page can create the templates).</Alert>
+            )}
+            <div style={{ maxHeight: 340, overflowY: 'auto' }}>
+                <Stack gap="sm">
+                    {Object.entries(byType).sort((a, b) => b[1].length - a[1].length).map(([ctype, group]) => {
+                        const all = group.every((i) => picked.has(i.part.pk));
+                        return (
+                            <Stack key={ctype} gap={2}>
+                                <Group gap={6}>
+                                    <Checkbox size="xs" checked={all} indeterminate={!all && group.some((i) => picked.has(i.part.pk))}
+                                        onChange={() => setGroup(group, !all)} />
+                                    <Text size="sm" fw={600}>{ctype}</Text>
+                                    <Badge size="xs" variant="light">{group.length}</Badge>
+                                </Group>
+                                <Table withTableBorder verticalSpacing={2}>
+                                    <Table.Tbody>
+                                        {group.map((i) => (
+                                            <Table.Tr key={i.part.pk}>
+                                                <Table.Td w={30}><Checkbox size="xs" checked={picked.has(i.part.pk)} onChange={() => toggle(i.part.pk)} /></Table.Td>
+                                                <Table.Td w="30%">
+                                                    <PartLink context={context} pk={i.part.pk} name={i.part.name} />
+                                                    <Text size="xs" c="dimmed" lineClamp={2}>{i.part.description}</Text>
+                                                </Table.Td>
+                                                <Table.Td>
+                                                    <Group gap={4}>
+                                                        {Object.entries(i.values).map(([role, value]) => (
+                                                            <Badge key={role} size="xs" variant={role === 'part.component_type' ? 'filled' : 'light'}
+                                                                style={{ textTransform: 'none' }}>
+                                                                {(preview.labels[role] || role).split(' (')[0]}: {value}
+                                                            </Badge>
+                                                        ))}
+                                                    </Group>
+                                                </Table.Td>
+                                            </Table.Tr>
+                                        ))}
+                                    </Table.Tbody>
+                                </Table>
+                            </Stack>
+                        );
+                    })}
+                </Stack>
+            </div>
+            <Group>
+                <Button size="xs" onClick={runApply} loading={applying} disabled={!picked.size}>
+                    Fill {picked.size} {picked.size === 1 ? 'part' : 'parts'}
+                </Button>
+            </Group>
+            {result && (
+                <Alert color={result.errors.length ? 'orange' : 'green'}>
+                    <Text size="xs">{result.written} values set on {result.parts} parts.</Text>
+                    {result.errors.slice(0, 10).map((e) => (
+                        <Text key={`${e.name}-${e.role}`} size="xs">{e.name} - {e.role}: {e.message}</Text>
+                    ))}
+                    <Text size="xs">Next: OMG's InvenTree Settings - Selection Lists - "Set up lists", add the values found
+                        to each list, then turn the lists on.</Text>
+                </Alert>
+            )}
+        </Stack>
+    );
+}
+
 function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
     const [problems, setProblems] = useState<number | null>(null);
     return (
@@ -297,9 +482,11 @@ function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
                     <Tabs.Tab value="setup" rightSection={problems ? <Badge size="xs" color="orange">{problems}</Badge> : null}>
                         Needs setup
                     </Tabs.Tab>
+                    <Tabs.Tab value="fill">Auto-fill</Tabs.Tab>
                 </Tabs.List>
                 <Tabs.Panel value="pending" pt="xs"><PendingPartsItem context={context} /></Tabs.Panel>
                 <Tabs.Panel value="setup" pt="xs"><NeedsSetup context={context} onCount={setProblems} /></Tabs.Panel>
+                <Tabs.Panel value="fill" pt="xs"><AutoFill context={context} /></Tabs.Panel>
             </Tabs>
         </Stack>
     );

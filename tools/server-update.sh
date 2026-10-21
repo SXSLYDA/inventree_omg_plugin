@@ -27,6 +27,10 @@ set -euo pipefail
 
 REPO="${OMG_PLUGIN_REPO:-https://github.com/SXSLYDA/inventree_omg_plugin.git}"
 PACKAGE="inventree-omg-harness-import"
+# InvenTree's own virtualenv (package installer). "inventree run python3 -c '...'"
+# loses the quoting on the way through, so the version is read with that
+# venv's pip instead.
+INVENTREE_PIP="${INVENTREE_PIP:-/opt/inventree/env/bin/pip}"
 CONFIG="${INVENTREE_CONFIG_FILE:-/etc/inventree/config.yaml}"
 PLUGINS_FILE=""
 TAG=""
@@ -56,6 +60,7 @@ done
 [ "$(id -u)" -eq 0 ] || die "run with sudo (the InvenTree service commands need root)."
 command -v inventree >/dev/null || die "the 'inventree' command isn't here - this script is for package-installer servers."
 command -v git >/dev/null || die "git isn't installed (apt install git)."
+[ -x "$INVENTREE_PIP" ] || die "InvenTree's pip isn't at $INVENTREE_PIP - run with INVENTREE_PIP=/path/to/env/bin/pip."
 
 vercmp() {  # prints -1, 0 or 1 comparing X.Y.Z strings
     if [ "$1" = "$2" ]; then echo 0; return; fi
@@ -63,7 +68,7 @@ vercmp() {  # prints -1, 0 or 1 comparing X.Y.Z strings
 }
 
 installed_version() {
-    inventree run python3 -c "import importlib.metadata as m; print(m.version('$PACKAGE'))" 2>/dev/null | tail -1 || true
+    "$INVENTREE_PIP" show "$PACKAGE" 2>/dev/null | sed -n 's/^Version:[[:space:]]*//p' | head -1 || true
 }
 
 # ------------------------------------------------------------------ 1. where and what

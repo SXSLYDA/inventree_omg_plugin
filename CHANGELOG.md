@@ -6,6 +6,12 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.3.0 — 2026-10-22
+
+- **Auto-fill tab** in the OMG Parts widget: works out each part's Component Type and OMG's parameters from its description and category ("Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Red/Blue stripe" = Wire, 16 AWG / 1.5 mm², TXL, Tinned Copper, 125, Red / Blue; contact wire ranges, seal ODs, accessory ways and exit angles). Shows everything first, grouped by type, to untick; only fills parameters a part doesn't have, never overwrites. Then use OMG's "Fill lists from parts" to start the selection lists.
+- **Part links open inside InvenTree** on the panel that fixes them - OMG Part Setup, or OMG Cavities for cavity problems - instead of a new tab that reloaded InvenTree (and checked the login) every click. Ctrl / middle-click still opens a new tab.
+- **No more "timeout of 5000ms exceeded"** in the OMG Parts widget and the OMG part panels: every call that reaches OMG (or Mouser) gets a longer timeout, like the sync panel.
+
 ## 0.2.0 — 2026-10-21
 
 First tagged release - release as a minor version (`.\build-and-bump.ps1 -Bump minor`, 0.1.32 -> 0.2.0). No new migrations.

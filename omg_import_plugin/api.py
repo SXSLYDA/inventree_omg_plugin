@@ -334,6 +334,43 @@ class WorkOnInOmgUrlView(APIView):
 # Pending parts (Mouser-sourced components not yet in InvenTree)
 # ---------------------------------------------------------------------
 
+class BulkFillView(APIView):
+    """
+    The OMG Parts widget's "Auto-fill" tab (bulk_fill.py).
+    GET  /plugin/omg-harness-import/bulk-fill/[?category=<pk>] - what would be
+         filled: each part's Component Type and values for its BLANK
+         parameters, worked out from its description and category. Writes nothing.
+    POST /plugin/omg-harness-import/bulk-fill/ {"items": [{part, values}]} -
+         write the ticked values (never over a value a part has). Needs
+         permission to change parts.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from plugin.registry import registry
+        from .bulk_fill import preview
+        from .part_setup import omg_part_config
+        config, error = omg_part_config(registry.get_plugin("omg-harness-import"))
+        if error:
+            return Response({"error": error, "items": []})
+        category = request.query_params.get("category")
+        return Response({"error": None, **preview(None, config, int(category) if category and category.isdigit() else None)})
+
+    def post(self, request):
+        from plugin.registry import registry
+        from .bulk_fill import apply
+        from .part_setup import omg_part_config
+        if not (request.user.is_superuser or request.user.has_perm("part.change_part")):
+            return Response({"detail": "You don't have permission to change parts."}, status=status.HTTP_403_FORBIDDEN)
+        items = request.data.get("items") or []
+        if not isinstance(items, list) or not items:
+            return Response({"detail": "Tick at least one part."}, status=status.HTTP_400_BAD_REQUEST)
+        config, error = omg_part_config(registry.get_plugin("omg-harness-import"))
+        if error:
+            return Response({"detail": error}, status=status.HTTP_400_BAD_REQUEST)
+        return Response(apply(None, config, items))
+
+
 class DataCheckView(APIView):
     """
     GET /plugin/omg-harness-import/data-check/[?refresh=1][&part=<pk>]
@@ -627,6 +664,7 @@ urlpatterns = [
     path("batches/<int:batch_id>/", BatchDetailView.as_view(), name="omg-batch-detail"),
     path("pending-parts/", PendingPartsView.as_view(), name="omg-pending-parts"),
     path("data-check/", DataCheckView.as_view(), name="omg-data-check"),
+    path("bulk-fill/", BulkFillView.as_view(), name="omg-bulk-fill"),
     path("harness-search/", HarnessSearchProxyView.as_view(), name="omg-harness-search"),
     path("import-harness/", HarnessImportView.as_view(), name="omg-import-harness"),
     path("import-harness/jobs/<int:job_id>/", HarnessImportJobView.as_view(), name="omg-import-harness-job"),
