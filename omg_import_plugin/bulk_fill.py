@@ -254,12 +254,42 @@ def preview(plugin, config, category_pk=None):
     roles = config.get('roles') or {}
     return {
         'items': items,
+        'refused': _refused(items, roles),
         'labels': {r: (roles.get(r) or {}).get('label', r) for r in used_roles},
         'templates': {r: (roles.get(r) or {}).get('template', '') for r in used_roles},
         'missing_templates': sorted({(roles.get(r) or {}).get('template', r) for r in used_roles
                                      if not _template((roles.get(r) or {}).get('template', ''))}),
         'parts_checked': len(parts),
     }
+
+
+def _allowed(template):
+    """The values `template` accepts (its selection list or choices), or None = anything."""
+    choices = [c for c in (template.get_choices() or []) if str(c).strip()]
+    return choices or None
+
+
+def _refused(items, roles):
+    """
+    Proposed values InvenTree would refuse because the template's choices /
+    selection list doesn't have them - e.g. Component Type still carrying its
+    old "Wire, Multicore, Connector, ..." choices, which refuses Lock and
+    Terminal. [{template, allowed, values: {value: [part names]}}].
+    """
+    out = {}
+    for item in items:
+        for role, value in item['values'].items():
+            name = (roles.get(role) or {}).get('template', '')
+            template = _template(name) if name else None
+            if template is None:
+                continue
+            if name not in out:
+                out[name] = {'template': template.name, 'allowed': _allowed(template), 'values': {}}
+            allowed = out[name]['allowed']
+            if allowed is None or str(value).lower() in {str(a).lower() for a in allowed}:
+                continue
+            out[name]['values'].setdefault(str(value), []).append(item['part']['name'])
+    return [r for r in out.values() if r['values']]
 
 
 def apply(plugin, config, items):

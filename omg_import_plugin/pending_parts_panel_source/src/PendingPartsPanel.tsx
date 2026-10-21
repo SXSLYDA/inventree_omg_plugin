@@ -324,7 +324,16 @@ interface FillPreview {
     items: FillItem[];
     labels: Record<string, string>;
     missing_templates: string[];
+    refused: { template: string; allowed: string[]; values: Record<string, string[]> }[];
     parts_checked: number;
+}
+interface FillError { name: string; role: string; message: string }
+
+// "Component Type: Invalid choice for parameter value - 58 parts: W4P, W4S, ..."
+function groupErrors(errors: FillError[], labels: Record<string, string>) {
+    const groups: Record<string, string[]> = {};
+    errors.forEach((e) => (groups[`${(labels[e.role] || e.role).split(/ \(| - /)[0]}: ${e.message}`] ||= []).push(e.name));
+    return Object.entries(groups).sort((a, b) => b[1].length - a[1].length);
 }
 
 const FILL_URL = '/plugin/omg-harness-import/bulk-fill/';
@@ -335,7 +344,7 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
     const [error, setError] = useState<string | null>(null);
     const [picked, setPicked] = useState<Set<number>>(new Set());
     const [applying, setApplying] = useState(false);
-    const [result, setResult] = useState<{ written: number; parts: number; errors: { name: string; role: string; message: string }[] } | null>(null);
+    const [result, setResult] = useState<{ written: number; parts: number; errors: FillError[] } | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -408,6 +417,41 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
                 <Button size="xs" variant="subtle" onClick={load} loading={loading}>Work out again</Button>
             </Group>
             {error && <Alert color="red">{error}</Alert>}
+            {result && (
+                <Alert color={result.errors.length ? 'orange' : 'green'} p="xs">
+                    <Text size="xs" fw={600}>
+                        {result.written} values set on {result.parts} parts
+                        {result.errors.length > 0 && ` - ${result.errors.length} refused`}.
+                    </Text>
+                    <div style={{ maxHeight: 110, overflowY: 'auto' }}>
+                        {groupErrors(result.errors, preview.labels).map(([what, names]) => (
+                            <Text key={what} size="xs">
+                                {what} - {names.length} {names.length === 1 ? 'part' : 'parts'}: {names.slice(0, 8).join(', ')}
+                                {names.length > 8 && ` and ${names.length - 8} more`}
+                            </Text>
+                        ))}
+                    </div>
+                    {result.errors.length === 0 && (
+                        <Text size="xs">Next: OMG's InvenTree Settings - Selection Lists - "Fill lists from parts",
+                            then check each list and turn it on.</Text>
+                    )}
+                </Alert>
+            )}
+            {(preview.refused || []).map((r) => {
+                const count = Object.values(r.values).reduce((n, names) => n + names.length, 0);
+                return (
+                    <Alert key={r.template} color="red" p="xs">
+                        <Text size="xs" fw={600}>
+                            InvenTree's {r.template} template won't accept {Object.keys(r.values).join(', ')}
+                            {' '}({count} {count === 1 ? 'part' : 'parts'}) - it only allows {r.allowed.join(', ')}.
+                        </Text>
+                        <Text size="xs">
+                            Those values would be refused. In OMG: InvenTree Settings - Selection Lists - "Set up lists"
+                            (it turns OMG's own lists on, which replaces the old choices), then "Work out again" here.
+                        </Text>
+                    </Alert>
+                );
+            })}
             {preview.missing_templates.length > 0 && (
                 <Alert color="yellow">No InvenTree template yet for {preview.missing_templates.join(', ')} - those
                     values will be skipped (OMG's InvenTree Settings page can create the templates).</Alert>
@@ -457,16 +501,6 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
                     Fill {picked.size} {picked.size === 1 ? 'part' : 'parts'}
                 </Button>
             </Group>
-            {result && (
-                <Alert color={result.errors.length ? 'orange' : 'green'}>
-                    <Text size="xs">{result.written} values set on {result.parts} parts.</Text>
-                    {result.errors.slice(0, 10).map((e) => (
-                        <Text key={`${e.name}-${e.role}`} size="xs">{e.name} - {e.role}: {e.message}</Text>
-                    ))}
-                    <Text size="xs">Next: OMG's InvenTree Settings - Selection Lists - "Set up lists", add the values found
-                        to each list, then turn the lists on.</Text>
-                </Alert>
-            )}
         </Stack>
     );
 }

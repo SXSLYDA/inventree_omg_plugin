@@ -6,6 +6,11 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.0 — 2026-10-22
+
+- **Auto-fill warns before filling** when a template's choices would refuse a value (e.g. Component Type still on its old "Wire, Multicore, Connector ..." choices refusing Lock and Terminal), and says to run OMG's "Set up lists". Refused values after a fill are grouped ("Component Type: Invalid choice - 58 parts: ...") at the top of the tab instead of a cut-off list under the button.
+- CI deploy: the SSH user defaults to root, and a missing host or key secret gives a clear error.
+
 ## 0.5.0 — 2026-10-22
 
 - **`inventree-omg-update` installs the plugin itself** with InvenTree's pip (output shown) before `invoke update`, which hid pip's output and left 0.2.0 installed on the 0.4.0 update. Download the command again once (see README) - the copy in `/usr/local/bin` doesn't update itself.
