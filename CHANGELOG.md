@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.1 — 2026-10-22
+
+- **Auto-fill gives Deutsch connectors a Cavity Map** from the part number: DT, DTM and DTP are numbered (`DT04-08PA` = `1-8: DT-16 / mat`, `DTM06-12SA` = `1-12: DTM-20 / mat`), DRC numbered with size 16 (`DRC16-70SA` = `1-70: DT-16 / mat`), the CAT 70-pin ECM plugs (147-1445, 147-1446, 160-7689) `1-70: DT-16 / mat`, HD10 lettered (`HD16-3-96S` = `A-C: DT-16 / mat`), sealed by the housing's grommet (`mat`), with Contact Count to match. Deutsch contacts get the matching Contact Series from theirs (`0460-202-16141` = DT-16, `0462-201-2031` = DTM-20, `1060-16-0122` = DT-16), and Deutsch blanks too (`0413-217-1605` and `114017` = DT-16, `0413-204-2005` = DTM-20). Skipped when the description's way count or the part's own Contact Count disagrees, or the Contact Series list has no matching series. AEC is `1-40: DT-16 / mat`. HD30 / HDP20 from the insert arrangement in the part number (Deutsch's technical manual), for the inserts with one contact size: 18-8, 18-14, 18-21, 24-16, 24-23, 24-31, 24-33 - lettered ones skip I / O / Q as Deutsch does (`HDP24-18-14PE` = `A-H, J-N, P: DT-16 / mat / maxod 3.05`, the E seal's largest wire). Mixed-size inserts (18-6, 18-20, 24-9, 24-14, 24-18, 24-19, 24-21, 24-29, 24-35, 24-47, 24-91) and other makes (TE, Bosch, PT) are left for the Cavities panel. Fixed: an HDP20 described "..., 23 way, black, E seal, ..." was taken for a Seal.
+
 - `build-and-bump.ps1` no longer commits or tags: it builds, bumps and stamps the changelog, then lists the changes and prints the commit, tag and push commands so you can review first.
 
 - **Auto-fill warns before filling** when a template's choices would refuse a value (e.g. Component Type still on its old "Wire, Multicore, Connector ..." choices refusing Lock and Terminal), and says to run OMG's "Set up lists". Refused values after a fill are grouped ("Component Type: Invalid choice - 58 parts: ...") at the top of the tab instead of a cut-off list under the button.

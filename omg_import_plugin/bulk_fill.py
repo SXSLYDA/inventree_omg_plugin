@@ -51,6 +51,8 @@ TYPE_RULES = (
     ('Cover', (r'\bcover\b', r'\bdust cap\b', r'^cap\b')),
     ('Blank', (r'cavity plug', r'sealing plug', r'blanking plug', r'\bdummy (?:terminal|plug)\b', r'filler plug')),
     ('Connector', (r'\bhousing\b',)),          # "Socket housing" is a connector, not a socket contact
+    # a way count before the seal rule: "Recept., HDP20, 24 shell, 23 way, black, E seal, ..." is a connector
+    ('Connector', (r'\b\d{1,3}\s*-?\s*way\b',)),
     ('Seal', (r'\bwire seal\b', r'^seal\b', r'single wire seal\b', r'\bseal, ')),
     # a ring lug / spade on its own: its "pins" are - + * #, no cavities
     ('Terminal', (r'\blug\b', r'\bspade\b', r'ring terminal', r'\beyelet\b', r'fork terminal')),
@@ -76,6 +78,88 @@ _MM2_CATEGORY = re.compile(r'^(\d+(?:[.,]\d+)?)\s*MM2?$', re.I)
 _INSULATION = re.compile(r'\b(TXL|GXL|SXL|PVC|XLPE|TEFZEL|SILICONE)\b', re.I)
 _MATERIAL = re.compile(r'\b(tinned copper|bare copper|copper|aluminium|aluminum)\b', re.I)
 _TEMP = re.compile(r'(\d{2,3})\s*°\s*C', re.I)
+
+
+# Deutsch cavity maps from the part number, which says the family and the way count:
+# DT04-08PA = DT, 8 way; DTM06-12SA = DTM, 12 way; DRC16-70SA = DRC, 70 way;
+# HD16-3-96S = HD10, 3 way. DT / DTM / DTP / DRC number their cavities 1..N
+# (DRC takes size 16 contacts), HD10 letters them A..; all of them
+# seal with the housing's own grommet (OMG: "mat" - no wire seals). The series
+# is the Contact Series their contacts get below, so map and contacts match.
+DEUTSCH_SIZE_SERIES = {'16': 'DT-16', '20': 'DTM-20', '12': 'DTP-12'}
+_DEUTSCH_HOUSING = (
+    (re.compile(r'^(DTM|DTP|DT)0[46]-0?(\d{1,2})[PS]', re.I), {'DT': 'DT-16', 'DTM': 'DTM-20', 'DTP': 'DTP-12'}, False),
+    (re.compile(r'^(DRC)\d{2}-(\d{2})[PS]', re.I), {'DRC': 'DT-16'}, False),
+    (re.compile(r'^(AEC)\d{2}-(\d{2})[PS]', re.I), {'AEC': 'DT-16'}, False),
+    (re.compile(r'^(HD1[046])-(\d)-\d+[PS]', re.I), {'HD14': 'DT-16', 'HD16': 'DT-16', 'HD10': 'DT-16'}, True),
+)
+# Deutsch HD30 / HDP20 (Deutsch HD30 & HDP20 technical manual, insert arrangements):
+# HDP24-18-14PE = shell 18, insert 14, pins, E seal. Only the inserts with ONE
+# contact size - the mixed ones (18-6, 18-20, 24-9, 24-14, ...) need each
+# cavity's size, so they're left for the Cavities panel. Letters skip I, O and Q
+# except 24-23 (A-X without I). maxod = the seal's largest wire OD for that size.
+_HD_CYLINDRICAL = re.compile(r'^HD(?:P2|[BN]?3)[46]-(18|24)-(\d{1,2})[PS]([NTE])?', re.I)
+HD_INSERTS = {
+    '18-8': ('A-H', '12'), '18-14': ('A-H, J-N, P', '16'), '18-21': ('1-21', '20'),
+    '24-16': ('A-H, J-N, P, R-S', '12'), '24-23': ('A-H, J-X', '16'), '24-31': ('1-31', '16'),
+    '24-33': ('1-33', '20'),
+}
+HD_INSERT_COUNT = {'18-8': 8, '18-14': 14, '18-21': 21, '24-16': 16, '24-23': 23, '24-31': 31, '24-33': 33}
+HD_SEAL_MAX_OD = {'20': {'N': 2.41, 'T': 2.41, 'E': 2.41}, '16': {'N': 3.40, 'T': 3.40, 'E': 3.05},
+                  '12': {'N': 4.32, 'T': 4.32, 'E': 4.01}}
+# Caterpillar's own 70-pin ECM plugs (147-1445, 147-1446, 160-7689): 1-70, size 16 contacts
+_CAT_70_PIN = re.compile(r'\b(?:cat|caterpillar)\b.*\b70[- ]?pin\b', re.I)
+# Deutsch blanking / sealing plugs: 0413-217-1605 = size 16, 0413-204-2005 = size 20;
+# 114017 (sz. 12-16) goes in size 16 cavities
+_DEUTSCH_BLANK = re.compile(r'^0413-\d{3}-(\d{2})\d{2}$', re.I)
+_DEUTSCH_BLANK_PARTS = {'114017': 'DT-16'}
+# Deutsch contacts: 0460-202-16141 (solid pin, size 16), 0462-201-2031 (solid socket,
+# size 20), 1060-16-0122 / 1062-16-0122 (stamped & formed, size 16)
+_DEUTSCH_CONTACT = (re.compile(r'^046[02]-\d{3}-(\d{2})\d', re.I), re.compile(r'^106[02]-(\d{2})-', re.I))
+
+
+def deutsch_cavity_map(name, ways=None, description=''):
+    """('1-8: DT-16 / mat', 8) for a Deutsch DT / DTM / DTP / DRC / HD10 housing, else ('', 0)."""
+    if _CAT_70_PIN.search(_norm_text(description)) and (not ways or int(ways) == 70):
+        return '1-70: DT-16 / mat', 70
+    hd = _HD_CYLINDRICAL.match(str(name or '').strip())
+    if hd:
+        insert = f"{hd.group(1)}-{hd.group(2)}"
+        if insert not in HD_INSERTS or (ways and int(ways) != HD_INSERT_COUNT[insert]):
+            return '', 0
+        cavities, size = HD_INSERTS[insert]
+        text = f"{cavities}: {DEUTSCH_SIZE_SERIES[size]} / mat"
+        if hd.group(3):
+            text += f" / maxod {HD_SEAL_MAX_OD[size][hd.group(3).upper()]:g}"
+        return text, HD_INSERT_COUNT[insert]
+    for regex, series_by_family, lettered in _DEUTSCH_HOUSING:
+        m = regex.match(str(name or '').strip())
+        if not m:
+            continue
+        count = int(m.group(2))
+        if not 1 <= count <= (8 if lettered else 70) or (ways and int(ways) != count):
+            return '', 0        # the description disagrees with the part number - leave it for a person
+        series = series_by_family[m.group(1).upper()]
+        cavities = (f"A-{chr(ord('A') + count - 1)}" if count > 1 else 'A') if lettered else \
+            (f"1-{count}" if count > 1 else '1')
+        return f"{cavities}: {series} / mat", count
+    return '', 0
+
+
+def deutsch_contact_series(name):
+    """'DT-16' for a Deutsch size 16 contact (pin or socket, solid or stamped), else ''."""
+    for regex in _DEUTSCH_CONTACT:
+        m = regex.match(str(name or '').strip())
+        if m:
+            return DEUTSCH_SIZE_SERIES.get(m.group(1), '')
+    return ''
+
+
+def deutsch_blank_series(name):
+    """'DT-16' for a Deutsch size 16 blanking / sealing plug, else ''."""
+    name = str(name or '').strip()
+    m = _DEUTSCH_BLANK.match(name)
+    return DEUTSCH_SIZE_SERIES.get(m.group(1), '') if m else _DEUTSCH_BLANK_PARTS.get(name, '')
 
 
 def _norm_text(text):
@@ -180,6 +264,24 @@ def _proposals(part, config, lists, current):
         if angle:
             values['accessory.exit_angle'] = {'90': '90', '45': '45', '180': 'Straight', '0': 'Straight'}.get(
                 angle.group(1), '')
+    if ctype == 'Connector':
+        cavity_map, count = deutsch_cavity_map(part.name, data.get('contact_count'), part.description)
+        own_count = (current.get((((config.get('roles') or {}).get('connector.contact_count') or {})
+                                  .get('template') or '').lower()) or '').strip()
+        if cavity_map and own_count and own_count != str(count):
+            cavity_map = ''     # its Contact Count says otherwise - leave the map for a person
+        series_list = lists.get('part.contact_series')
+        if cavity_map and series_list:
+            series = cavity_map.split(': ', 1)[1].split(' / ')[0]
+            snapped = suggest(series, series_list)
+            cavity_map = cavity_map.replace(f": {series} /", f": {snapped} /") if snapped else ''
+        if cavity_map:
+            values['connector.cavity_map'] = cavity_map
+            values['connector.contact_count'] = str(count)
+    if ctype == 'Contact' and not values.get('part.contact_series'):
+        values['part.contact_series'] = deutsch_contact_series(part.name)
+    if ctype == 'Blank' and not values.get('part.contact_series'):
+        values['part.contact_series'] = deutsch_blank_series(part.name)
     if ctype == 'Seal':
         od = re.search(r'\[(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\]\s*ins', text) or \
             re.search(r'(\d+(?:\.\d+)?)-(\d+(?:\.\d+)?)\s*od\b', text)
