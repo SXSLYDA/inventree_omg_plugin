@@ -6,6 +6,8 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+- **The release commit is tagged for you:** `build-and-bump.ps1` installs a git hook (`tools/git-hooks/post-commit`) that tags the commit changing `version.py` as `vX.Y.Z` - commit in PyCharm, push with "Push tags", done. Running the script again is safe: before committing it keeps the version it bumped and only rebuilds; after committing but not pushing, or with nothing new since the last release, it stops and says what to do; a release committed without a tag gets tagged instead of bumped again.
+
 ## 0.6.3 — 2026-10-22
 
 - **OMG sees part changes straight away** (needs OMG with /api/parts/refresh/): saving a part parameter (Cavity Map, Contact Count, Plating ...) or adding a related part tells OMG, which re-reads that part and re-works the wire ends of the harnesses using it - instead of showing the old values until its cache expired (15 minutes to an hour). Removing a related part on the OMG Cavities panel tells OMG too; for a parameter or related part deleted elsewhere in InvenTree use OMG's Sync Check "Re-read InvenTree".

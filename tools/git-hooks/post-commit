@@ -1,0 +1,27 @@
+#!/bin/sh
+# OMG plugin release tag - installed into .git/hooks by build-and-bump.ps1.
+#
+# When a commit changes omg_import_plugin/version.py (the release commit after
+# build-and-bump.ps1 bumped it), tag that commit vX.Y.Z. PyCharm's "Push tags"
+# (or `git push origin vX.Y.Z`) then sends it - the tag is what releases.
+#
+# The tag already there: on an earlier commit nobody has pushed yet (e.g. the
+# release commit was amended) it's moved to this one; a pushed tag is never
+# moved.
+changed=$(git diff-tree --no-commit-id --name-only -r HEAD -- omg_import_plugin/version.py)
+[ -n "$changed" ] || exit 0
+ver=$(git show HEAD:omg_import_plugin/version.py | sed -n "s/^OMG_IMPORT_PLUGIN_VERSION[[:space:]]*=[[:space:]]*[\"']\([0-9]*\.[0-9]*\.[0-9]*\)[\"'].*/\1/p" | head -1)
+[ -n "$ver" ] || exit 0
+tag="v$ver"
+if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+    old=$(git rev-list -n 1 "$tag")
+    head=$(git rev-parse HEAD)
+    [ "$old" = "$head" ] && exit 0
+    if [ -n "$(git branch -r --contains "$old" 2>/dev/null)" ]; then
+        echo "release tag: $tag is already on a pushed commit - not moved. Bump the version for a new release."
+        exit 0
+    fi
+    git tag -f -a "$tag" -m "Release $tag" >/dev/null && echo "release tag: $tag moved to this commit (the old one was never pushed)."
+    exit 0
+fi
+git tag -a "$tag" -m "Release $tag" && echo "release tag: tagged this commit $tag - push with 'Push tags' ticked (or: git push origin $tag)."

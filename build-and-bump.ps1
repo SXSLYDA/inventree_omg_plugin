@@ -9,6 +9,15 @@
 #   .\build-and-bump.ps1 -SkipBuild       # no panel changes - skip the npm builds
 #   .\build-and-bump.ps1 -Yes             # don't ask (e.g. empty changelog)
 #
+# Your release, start to finish:
+#   1. .\build-and-bump.ps1   - builds, bumps, stamps the changelog
+#   2. commit in PyCharm      - the release commit is TAGGED for you (git hook below)
+#   3. Push with "Push tags" ticked (All)  - the tag is what releases
+#
+# Safe to run again: before you've committed it re-uses the version it already
+# bumped (it rebuilds, it doesn't bump twice); after you've committed but not
+# pushed, or with nothing changed since the last release, it stops and says so.
+#
 # What it does, in order (it stops at the first problem):
 #   1. Checks: git (and npm unless -SkipBuild), version.py and CHANGELOG.md exist,
 #      the new tag doesn't already exist here or on GitHub.
@@ -18,9 +27,11 @@
 #   4. Checks every .py file compiles (needs Python 3 on PATH or your venv active).
 #   5. Bumps omg_import_plugin/version.py (setup.py reads it from there) and turns
 #      "## Unreleased" in CHANGELOG.md into "## X.Y.Z - date".
-#   6. Shows what changed and the commands to commit, tag and push.
-# It does NOT commit, tag or push - review the changes in PyCharm first, then
-# commit, tag vX.Y.Z and push the commit AND the tag yourself.
+#   6. Installs the release-tag git hook (tools/git-hooks/post-commit): when you
+#      commit a version.py change, that commit is tagged vX.Y.Z automatically.
+#   7. Shows what changed and what to do next.
+# It does NOT commit or push - review the changes in PyCharm first, commit
+# (the hook tags it), then push the commit AND the tag.
 #
 # Why a tag: the server's plugins.txt pins the plugin to a release tag
 # (...inventree_omg_plugin.git@vX.Y.Z). A new tag is a new install link, so pip
@@ -93,15 +104,67 @@ $setupPath = Join-Path $root 'setup.py'
 if (-not (Test-Path $versionPath)) { Fail "omg_import_plugin\version.py not found - run this from the plugin repo root (next to setup.py)." }
 if (-not (Test-Path $changelogPath)) { Fail "CHANGELOG.md not found." }
 
+$versionRegex = 'OMG_IMPORT_PLUGIN_VERSION\s*=\s*[''"](\d+)\.(\d+)\.(\d+)[''"]'
 $versionText = Read-Text $versionPath
-$match = [regex]::Match($versionText, 'OMG_IMPORT_PLUGIN_VERSION\s*=\s*[''"](\d+)\.(\d+)\.(\d+)[''"]')
+$match = [regex]::Match($versionText, $versionRegex)
 if (-not $match.Success) { Fail "couldn't find OMG_IMPORT_PLUGIN_VERSION = `"X.Y.Z`" in version.py." }
 $major = [int]$match.Groups[1].Value
 $minor = [int]$match.Groups[2].Value
 $patch = [int]$match.Groups[3].Value
 $oldVersion = "$major.$minor.$patch"
 
-if ($Version) {
+# The version in your last commit - to tell "bumped, not committed yet" (re-use it)
+# and "committed but not pushed" / "nothing new" (stop) from a fresh release.
+$headText = (git show HEAD:omg_import_plugin/version.py 2>$null) -join "`n"
+$headMatch = [regex]::Match($headText, $versionRegex)
+$headVersion = if ($headMatch.Success) { "$($headMatch.Groups[1].Value).$($headMatch.Groups[2].Value).$($headMatch.Groups[3].Value)" } else { $null }
+$alreadyBumped = $false
+$changelogNow = Read-Text $changelogPath
+
+if (-not $Version -and $headVersion -and $oldVersion -ne $headVersion) {
+    # version.py already moved on since the last commit: this run's own bump, not committed yet
+    if ($changelogNow -match "(?m)^## $([regex]::Escape($oldVersion)) ") {
+        $alreadyBumped = $true
+        Write-Host "Already bumped to $oldVersion (not committed yet) - rebuilding, not bumping again." -ForegroundColor Yellow
+    } else {
+        Fail "version.py says $oldVersion but your last commit says $headVersion, and CHANGELOG.md has no $oldVersion section. Put version.py back (git checkout -- omg_import_plugin/version.py) or run with -Version $oldVersion."
+    }
+} elseif (-not $Version -and $headVersion) {
+    $headTag = "v$headVersion"
+    $headTagOnGitHub = git ls-remote --tags origin "refs/tags/$headTag" 2>$null
+    $gitHubReached = ($LASTEXITCODE -eq 0)
+    if (-not (git tag --list $headTag) -and -not $headTagOnGitHub -and $gitHubReached) {
+        # The release commit is in, but it was never tagged (committed without the
+        # hook): tag the commit that set this version, rather than bumping again.
+        $releaseCommit = (git log -n 1 --format=%H -- omg_import_plugin/version.py 2>$null)
+        if ($releaseCommit) {
+            git tag -a $headTag $releaseCommit -m "Release $headTag" | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host ""
+                Write-Host "$headVersion is committed but was never tagged - tagged $headTag on $($releaseCommit.Substring(0, 7)) now." -ForegroundColor Green
+                Write-Host "Push it: PyCharm Push with 'Push tags' ticked, or:  git push origin master $headTag"
+                Write-Host "Run this script again after that for the next release."
+                Pop-Location
+                exit 0
+            }
+        }
+    }
+    if (git tag --list $headTag) {
+        $headTagRemote = git ls-remote --tags origin "refs/tags/$headTag" 2>$null
+        if ($LASTEXITCODE -eq 0 -and -not $headTagRemote) {
+            Fail "$headTag is committed and tagged but not on GitHub yet - push it (PyCharm: Push with 'Push tags' ticked, or: git push origin master $headTag). Nothing to bump."
+        }
+        $sinceTag = git rev-list "$headTag..HEAD" 2>$null
+        $uncommitted = git status --porcelain 2>$null
+        if (-not $sinceTag -and -not $uncommitted) {
+            Fail "nothing has changed since $headTag - no new release to make."
+        }
+    }
+}
+
+if ($alreadyBumped) {
+    $newVersion = $oldVersion
+} elseif ($Version) {
     if ($Version -notmatch '^\d+\.\d+\.\d+$') { Fail "-Version must look like 1.2.3" }
     $newVersion = $Version
 } elseif ($Bump -eq 'major') {
@@ -114,7 +177,7 @@ if ($Version) {
 $newParts = $newVersion.Split('.') | ForEach-Object { [int]$_ }
 $isNewer = ($newParts[0] -gt $major) -or ($newParts[0] -eq $major -and $newParts[1] -gt $minor) -or
            ($newParts[0] -eq $major -and $newParts[1] -eq $minor -and $newParts[2] -gt $patch)
-if (-not $isNewer) { Fail "$newVersion isn't newer than the current $oldVersion." }
+if (-not $isNewer -and -not $alreadyBumped) { Fail "$newVersion isn't newer than the current $oldVersion." }
 $tag = "v$newVersion"
 
 $branch = (git rev-parse --abbrev-ref HEAD 2>$null)
@@ -241,6 +304,9 @@ if (-not $python) {
 
 # ------------------------------------------------------------------ 5. bump
 Step "Bumping"
+if ($alreadyBumped) {
+    Write-Host "version.py and CHANGELOG.md already say $newVersion - left as they are."
+} else {
 $changelog = Read-Text $changelogPath
 $nl = if ($changelog.Contains("`r`n")) { "`r`n" } else { "`n" }
 $heading = [regex]::Match($changelog, '(?m)^## Unreleased[ \t]*\r?$')
@@ -269,31 +335,52 @@ Write-Text $changelogPath ($changelog.Substring(0, $heading.Index) + $released +
 $versionText = [regex]::Replace($versionText, 'OMG_IMPORT_PLUGIN_VERSION\s*=\s*[''"]\d+\.\d+\.\d+[''"]', "OMG_IMPORT_PLUGIN_VERSION = `"$newVersion`"")
 Write-Text $versionPath $versionText
 Write-Host "Version bumped: $oldVersion -> $newVersion; CHANGELOG.md stamped '$newVersion $emDash $date'."
+}
 
-# ------------------------------------------------------------------ 6. what changed
+# ------------------------------------------------------------------ 6. release-tag hook
+# .git/hooks isn't part of the repo, so it's (re)installed on every run: the
+# commit that changes version.py gets tagged vX.Y.Z (tools/git-hooks/post-commit).
+Step "Release-tag git hook"
+$hookSource = Join-Path $root 'tools\git-hooks\post-commit'
+$hooksDir = (git rev-parse --git-path hooks 2>$null)
+if (-not (Test-Path $hookSource) -or -not $hooksDir) {
+    Write-Warning "Couldn't install the release-tag hook - tag the release commit yourself: git tag -a $tag -m `"Release $tag`""
+} else {
+    if (-not [System.IO.Path]::IsPathRooted($hooksDir)) { $hooksDir = Join-Path $root $hooksDir }
+    New-Item -ItemType Directory -Force -Path $hooksDir | Out-Null
+    $hookPath = Join-Path $hooksDir 'post-commit'
+    $hookText = (Read-Text $hookSource) -replace "`r", ""     # sh needs LF line endings
+    $existing = if (Test-Path $hookPath) { Read-Text $hookPath } else { $null }
+    if ($existing -and -not $existing.Contains('OMG plugin release tag')) {
+        Write-Warning "$hookPath is someone else's hook - left alone. Tag the release commit yourself: git tag -a $tag -m `"Release $tag`""
+    } else {
+        Write-Text $hookPath $hookText
+        if ($IsLinux -or $IsMacOS) { chmod +x $hookPath }   # Git for Windows runs hooks without it
+        Write-Host "Installed: committing this release tags it $tag."
+    }
+}
+
+# ------------------------------------------------------------------ 7. what changed
 Step "Ready to commit"
 git status --short | Out-Host
 
 Write-Host ""
-Write-Host "Ready for $tag - nothing committed, tagged or pushed." -ForegroundColor Green
+Write-Host "Ready for $tag - nothing committed or pushed." -ForegroundColor Green
 Write-Host ""
-Write-Host "1. Look over the changes above (PyCharm: Commit tool window, Alt+0), then commit:"
-Write-Host "     git add -A"
-Write-Host "     git commit -m `"Release $tag`""
+Write-Host "1. Look over the changes above, then commit them (PyCharm: Commit, Alt+0 - or:"
+Write-Host "     git add -A; git commit -m `"Release $tag`" )"
+Write-Host "   The commit is tagged $tag for you (the release-tag hook prints 'tagged this commit $tag')."
 Write-Host ""
-Write-Host "2. Tag that commit (PyCharm: Git -> New Tag..., name $tag):"
-Write-Host "     git tag -a $tag -m `"Release $tag`""
-Write-Host ""
-Write-Host "3. Push the commit AND the tag - the tag is what deploys:"
-Write-Host "     PyCharm:  Git -> Push (Ctrl+Shift+K), tick 'Push tags' (bottom-left), then Push"
-Write-Host "     Terminal: git push --follow-tags"
-Write-Host "   Check the tag reached GitHub (prints a line ending in refs/tags/$tag):"
+Write-Host "2. Push the commit AND the tag - the tag is what releases:"
+Write-Host "     PyCharm:  Git -> Push (Ctrl+Shift+K), tick 'Push tags' (All), then Push"
+Write-Host "     Terminal: git push origin master $tag"
+Write-Host "   (PyCharm's push window lists commits only - the tag is sent without being shown.)"
+Write-Host "   Check it reached GitHub (prints a line ending in refs/tags/$tag):"
 Write-Host "     git ls-remote --tags origin $tag"
 Write-Host ""
-Write-Host "4. GitHub Actions (CI) then checks the tag, publishes the release and updates"
-Write-Host "   InvenTree to it. To do it by hand instead, on the server:"
-Write-Host "     sudo inventree-omg-update $tag"
-Write-Host "   (which moves plugins.txt to:  inventree-omg-harness-import @ git+$repoUrl@$tag )"
+Write-Host "3. On the server:  sudo inventree-omg-update"
+Write-Host "   (installs the newest release tag - moves plugins.txt to ...inventree_omg_plugin.git@$tag )"
 Write-Host ""
-Write-Host "To start again before committing:  git checkout -- omg_import_plugin/version.py CHANGELOG.md"
+Write-Host "Running this again before you commit is fine - it keeps $newVersion and only rebuilds."
+Write-Host "To start again from scratch before committing:  git checkout -- omg_import_plugin/version.py CHANGELOG.md"
 Pop-Location

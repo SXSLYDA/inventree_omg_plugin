@@ -135,14 +135,17 @@ reaches InvenTree on its own.
 2. Run `.\build-and-bump.ps1` (patch), `-Bump minor`, `-Bump major` or
    `-Version X.Y.Z`. It builds the panels (`-SkipBuild` if none changed), moves
    setup.py's mouser_shared pin to its newest tag, checks the Python compiles,
-   bumps `omg_import_plugin/version.py` and stamps the changelog. It doesn't
-   commit, tag or push - it lists what changed and prints the commands.
-3. Review the changes, commit them ("Release vX.Y.Z"), then tag that commit
-   `vX.Y.Z` - PyCharm: Git -> New Tag; terminal:
-   `git tag -a vX.Y.Z -m "Release vX.Y.Z"`.
-4. Push the commit **and the tag** - PyCharm: Git -> Push, tick "Push tags";
-   terminal: `git push --follow-tags`. The tag is what deploys: a commit
-   pushed without it changes nothing on the server.
+   bumps `omg_import_plugin/version.py`, stamps the changelog and installs the
+   release-tag git hook. It doesn't commit or push.
+3. Review and commit (PyCharm: Commit). The hook tags that commit `vX.Y.Z` -
+   it prints "tagged this commit vX.Y.Z".
+4. Push with **"Push tags"** ticked (All) - PyCharm's push window lists commits
+   only, the tag goes with them. Terminal: `git push origin master vX.Y.Z`. The
+   tag is what releases: a commit pushed without it changes nothing on the server.
+
+Running the script twice is safe: before you commit it re-uses the version it
+bumped (it only rebuilds); after you commit but before you push, or with nothing
+new since the last release, it stops and tells you what to do.
 
 ### What CI does with the tag (`.github/workflows/ci.yml`)
 
