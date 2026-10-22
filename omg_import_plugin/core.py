@@ -147,14 +147,13 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
     # background worker. Only parameter-save events are taken.
 
     def wants_process_event(self, event):
-        from .gauge_autofill import EVENTS
-        from .omg_refresh import EVENTS as REFRESH_EVENTS
-        return event in EVENTS or event in REFRESH_EVENTS
+        from .omg_refresh import events
+        return event in events()
 
     def process_event(self, event, *args, **kwargs):
-        from .gauge_autofill import EVENTS, process_gauge_event
+        from .gauge_autofill import parameter_events, process_gauge_event
         from .omg_refresh import process_refresh_event
-        if event in EVENTS:
+        if event in parameter_events():
             process_gauge_event(self, event, **kwargs)
         process_refresh_event(event, **kwargs)      # OMG re-reads the changed part
 

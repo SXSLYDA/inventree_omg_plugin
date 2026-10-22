@@ -29,7 +29,16 @@ from .inventree_native_lookup import (_part_content_type, get_part_parameter_str
 
 logger = logging.getLogger("inventree")
 
-EVENTS = {"common_parameter.created", "common_parameter.saved"}
+def parameter_events():
+    """
+    InvenTree's events for a part parameter being created / saved. InvenTree
+    names model events after the database table ("<table>.saved"), and the
+    Parameter model still lives in the old part_partparameter table - so ask
+    the model rather than guessing ("common_parameter.saved" never fires).
+    """
+    from common.models import Parameter
+    table = Parameter._meta.db_table
+    return {f"{table}.created", f"{table}.saved"}
 
 NAMES_TTL = 600  # seconds
 

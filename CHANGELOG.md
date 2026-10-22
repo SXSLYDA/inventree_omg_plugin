@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.4 — 2026-10-22
+
+- **Fixed: parameter events never reached the plugin.** InvenTree names model events after the database table, and part parameters are still in `part_partparameter`, so the plugin listened for `common_parameter.saved`, which never fires. It now asks InvenTree for the table name. This also fixes the gauge auto-fill (Gauge mm2 <-> AWG), which had stopped filling for the same reason, and makes OMG's refresh on a Cavity Map / Plating change work.
+
 - **The release commit is tagged for you:** `build-and-bump.ps1` installs a git hook (`tools/git-hooks/post-commit`) that tags the commit changing `version.py` as `vX.Y.Z` - commit in PyCharm, push with "Push tags", done. Running the script again is safe: before committing it keeps the version it bumped and only rebuilds; after committing but not pushing, or with nothing new since the last release, it stops and says what to do; a release committed without a tag gets tagged instead of bumped again.
 
 ## 0.6.3 — 2026-10-22
