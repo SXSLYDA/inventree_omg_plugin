@@ -6,7 +6,9 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
-## 0.6.4 — 2026-10-22
+## 0.6.5 — 2026-10-22
+
+- **Review list: set-up problems point at the part, not at Mouser.** When the part is already linked and the problem is how it's set up (no related contacts or blank, a lock to choose, a Cavity Map problem), the item shows a button straight to the fix - "Fix related parts / cavities" (OMG Cavities panel) or "Choose it on the part (Preferred Accessories)" (OMG Part Setup) - instead of Import from Mouser / Search / Create part. Those are still there under "Use a different part...". Rebuild the panels for this release (no `-SkipBuild`).
 
 - **Fixed: parameter events never reached the plugin.** InvenTree names model events after the database table, and part parameters are still in `part_partparameter`, so the plugin listened for `common_parameter.saved`, which never fires. It now asks InvenTree for the table name. This also fixes the gauge auto-fill (Gauge mm2 <-> AWG), which had stopped filling for the same reason, and makes OMG's refresh on a Cavity Map / Plating change work.
 

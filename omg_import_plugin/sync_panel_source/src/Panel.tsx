@@ -130,6 +130,20 @@ function reviewSortKey(item: UnresolvedItem): string {
     return reviewTitle(item);
 }
 
+// A problem with a part that's already linked (its related parts, Cavity Map,
+// lock choice...) is fixed on that part's OMG panel - not by importing or
+// creating another part. Which panel, from what the problem is about.
+function fixPanel(notes: string): { panel: string; label: string } {
+    const text = notes.toLowerCase();
+    if (/(choose one of|needs a |accessor|doesn't fit|does not fit|lock|boot|backshell|cover)/.test(text)) {
+        return { panel: 'omg-part-setup', label: 'Choose it on the part (Preferred Accessories)' };
+    }
+    if (/(related part|contact|blank|seal|cavity|series|gold)/.test(text)) {
+        return { panel: 'omg-cavities', label: 'Fix related parts / cavities' };
+    }
+    return { panel: 'omg-part-setup', label: 'Open part setup' };
+}
+
 const PLUGIN_SLUG = 'omg-harness-import';
 const SUPPLIER_SLUG = 'mouser';
 
@@ -159,6 +173,12 @@ function ReviewItem({ item, context, onChanged }: {
     const defaultTerm = pending?.mpn || omg?.part_no || '';
 
     const [mode, setMode] = useState<'none' | 'search'>('none');
+    // linked part with a set-up problem: fix it on the part; replacing the part is tucked away
+    const linkedPk = omg?.linked_inventree_pk || null;
+    const setupProblem = !!linkedPk && !pending;
+    const [showReplace, setShowReplace] = useState(false);
+    const fix = fixPanel(item.notes || '');
+    const openPart = (panel: string) => context.navigate(`/part/${linkedPk}/${panel}`);
     const [busy, setBusy] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [createdPartPk, setCreatedPartPk] = useState<number | null>(null);
@@ -283,8 +303,24 @@ function ReviewItem({ item, context, onChanged }: {
                     </Group>
                 )}
 
+                {setupProblem && (
+                    <Group gap="xs">
+                        <Button size="xs" variant="filled" onClick={() => openPart(fix.panel)}>
+                            {fix.label}
+                        </Button>
+                        {fix.panel !== 'omg-part-setup' && (
+                            <Button size="xs" variant="light" onClick={() => openPart('omg-part-setup')}>
+                                Open part setup
+                            </Button>
+                        )}
+                        <Button size="xs" variant="subtle" onClick={() => setShowReplace(!showReplace)}>
+                            {showReplace ? 'Hide replace options' : 'Use a different part...'}
+                        </Button>
+                    </Group>
+                )}
+
                 <Group gap="xs">
-                    {item.omg_object_type && (
+                    {item.omg_object_type && (!setupProblem || showReplace) && (
                         <>
                             <Button size="xs" variant="light" onClick={() => setWizardOpen(true)}>
                                 {pending ? 'Import pending part from Mouser' : 'Import from Mouser'}
