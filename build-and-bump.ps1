@@ -9,7 +9,7 @@
 #   .\build-and-bump.ps1 -SkipBuild       # no panel changes - skip the npm builds
 #   .\build-and-bump.ps1 -Yes             # don't ask (e.g. empty changelog)
 #
-# What it does, in order (it stops at the first problem, before committing anything):
+# What it does, in order (it stops at the first problem):
 #   1. Checks: git (and npm unless -SkipBuild), version.py and CHANGELOG.md exist,
 #      the new tag doesn't already exist here or on GitHub.
 #   2. Builds all five panels and merges their Vite manifests (see the note at
@@ -18,8 +18,9 @@
 #   4. Checks every .py file compiles (needs Python 3 on PATH or your venv active).
 #   5. Bumps omg_import_plugin/version.py (setup.py reads it from there) and turns
 #      "## Unreleased" in CHANGELOG.md into "## X.Y.Z - date".
-#   6. Commits ALL current changes as "Release vX.Y.Z" and tags vX.Y.Z.
-# It does NOT push. Push the commit AND the tag (PyCharm: tick "Push tags").
+#   6. Shows what changed and the commands to commit, tag and push.
+# It does NOT commit, tag or push - review the changes in PyCharm first, then
+# commit, tag vX.Y.Z and push the commit AND the tag yourself.
 #
 # Why a tag: the server's plugins.txt pins the plugin to a release tag
 # (...inventree_omg_plugin.git@vX.Y.Z). A new tag is a new install link, so pip
@@ -119,7 +120,7 @@ $tag = "v$newVersion"
 $branch = (git rev-parse --abbrev-ref HEAD 2>$null)
 Write-Host "Branch: $branch    Version: $oldVersion -> $newVersion    Tag: $tag"
 if ($branch -ne 'master' -and $branch -ne 'main') {
-    Write-Host "Not on master - the release commit and tag will be on '$branch'. Merge it into master afterwards." -ForegroundColor Yellow
+    Write-Host "Not on master - commit and tag on '$branch', then merge it into master." -ForegroundColor Yellow
 }
 
 if (git tag --list $tag) { Fail "tag $tag already exists here. Pick another version with -Version." }
@@ -269,28 +270,30 @@ $versionText = [regex]::Replace($versionText, 'OMG_IMPORT_PLUGIN_VERSION\s*=\s*[
 Write-Text $versionPath $versionText
 Write-Host "Version bumped: $oldVersion -> $newVersion; CHANGELOG.md stamped '$newVersion $emDash $date'."
 
-# ------------------------------------------------------------------ 6. commit and tag
-Step "Committing"
-git add -A
+# ------------------------------------------------------------------ 6. what changed
+Step "Ready to commit"
 git status --short | Out-Host
-git commit -q -m "Release $tag"
-if ($LASTEXITCODE -ne 0) { Fail "git commit failed (above). Is your git user.name / user.email set?" }
-git tag -a $tag -m "Release $tag"
-if ($LASTEXITCODE -ne 0) { Fail "couldn't create tag $tag." }
 
 Write-Host ""
-Write-Host "Released $tag (committed and tagged, NOT pushed)." -ForegroundColor Green
+Write-Host "Ready for $tag - nothing committed, tagged or pushed." -ForegroundColor Green
 Write-Host ""
-Write-Host "1. Push the commit AND the tag:"
+Write-Host "1. Look over the changes above (PyCharm: Commit tool window, Alt+0), then commit:"
+Write-Host "     git add -A"
+Write-Host "     git commit -m `"Release $tag`""
+Write-Host ""
+Write-Host "2. Tag that commit (PyCharm: Git -> New Tag..., name $tag):"
+Write-Host "     git tag -a $tag -m `"Release $tag`""
+Write-Host ""
+Write-Host "3. Push the commit AND the tag - the tag is what deploys:"
 Write-Host "     PyCharm:  Git -> Push (Ctrl+Shift+K), tick 'Push tags' (bottom-left), then Push"
 Write-Host "     Terminal: git push --follow-tags"
 Write-Host "   Check the tag reached GitHub (prints a line ending in refs/tags/$tag):"
 Write-Host "     git ls-remote --tags origin $tag"
 Write-Host ""
-Write-Host "2. GitHub Actions (CI) then checks the tag, publishes the release and updates"
+Write-Host "4. GitHub Actions (CI) then checks the tag, publishes the release and updates"
 Write-Host "   InvenTree to it. To do it by hand instead, on the server:"
 Write-Host "     sudo inventree-omg-update $tag"
 Write-Host "   (which moves plugins.txt to:  inventree-omg-harness-import @ git+$repoUrl@$tag )"
 Write-Host ""
-Write-Host "To undo before pushing:  git tag -d $tag; git reset --soft HEAD~1"
+Write-Host "To start again before committing:  git checkout -- omg_import_plugin/version.py CHANGELOG.md"
 Pop-Location
