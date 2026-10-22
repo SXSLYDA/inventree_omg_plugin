@@ -148,11 +148,15 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
 
     def wants_process_event(self, event):
         from .gauge_autofill import EVENTS
-        return event in EVENTS
+        from .omg_refresh import EVENTS as REFRESH_EVENTS
+        return event in EVENTS or event in REFRESH_EVENTS
 
     def process_event(self, event, *args, **kwargs):
-        from .gauge_autofill import process_gauge_event
-        process_gauge_event(self, event, **kwargs)
+        from .gauge_autofill import EVENTS, process_gauge_event
+        from .omg_refresh import process_refresh_event
+        if event in EVENTS:
+            process_gauge_event(self, event, **kwargs)
+        process_refresh_event(event, **kwargs)      # OMG re-reads the changed part
 
     # --- ValidationMixin: gauge values (gauge_autofill.validate_gauge_value) ---
 

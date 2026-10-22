@@ -435,6 +435,10 @@ def save_cavities(part, config, rows, related_add, related_remove):
                 PartRelated.objects.filter(Q(part_1=part, part_2_id=int(pk)) | Q(part_2=part, part_1_id=int(pk))).delete()
     except ValidationError as exc:
         return list(exc.messages)
+    if related_remove:
+        # removing a related part sends no event OMG can use - tell it directly
+        from .omg_refresh import notify
+        notify([part.pk] + [int(pk) for pk in related_remove])
     return []
 
 

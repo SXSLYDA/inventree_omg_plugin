@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.3 — 2026-10-22
+
+- **OMG sees part changes straight away** (needs OMG with /api/parts/refresh/): saving a part parameter (Cavity Map, Contact Count, Plating ...) or adding a related part tells OMG, which re-reads that part and re-works the wire ends of the harnesses using it - instead of showing the old values until its cache expired (15 minutes to an hour). Removing a related part on the OMG Cavities panel tells OMG too; for a parameter or related part deleted elsewhere in InvenTree use OMG's Sync Check "Re-read InvenTree".
+
 ## 0.6.2 — 2026-10-22
 
 - **Gold or nickel contacts per wire** (needs OMG with Plating): Auto-fill fills the new **Plating** parameter on contacts from their description (gold, nickel, tin, silver) and **Shielded** on multicore cables (shielded, screened, CAN, J1939). OMG puts the gold contact on twisted pairs and shielded multicore cores and the other one on everything else, so a connector can carry both. Run OMG's "Create missing templates" and "Set up lists" first.
