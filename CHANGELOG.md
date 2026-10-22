@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.7 — 2026-10-22
+
+- **OMG Part Setup is a 3-step form:** 1 What it is (Component Type - saved first, "Save type and continue"), 2 Details (its parameters), 3 for a connector, Cavities & accessories (buttons to the OMG Cavities / OMG Accessories panels). Those panels only appear on a part InvenTree knows is a connector, so the type is saved before you're sent there - and the page reloads to show them when the type was only just saved.
+
 - `build-and-bump.ps1` stages the built panel files (`omg_import_plugin/static`, new hashed files and removed old ones) so PyCharm's commit always includes them, and stops if `manifest.json` names a panel file that isn't there.
 
 ## 0.6.6 — 2026-10-22

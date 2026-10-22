@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Anchor, Autocomplete, Badge, Button, Checkbox, Group, Image, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Autocomplete, Badge, Button, Checkbox, Group, Image, Loader, MultiSelect, Select, Stack, Stepper, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
@@ -17,6 +17,39 @@ const PLUGIN = '/plugin/omg-harness-import';
 // 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
 const OMG_TIMEOUT_MS = 60000;
 const LONG = { timeout: OMG_TIMEOUT_MS };
+
+// ==================== Wire sizes: mm² and AWG ====================
+// A contact's / terminal's Min / Max Gauge can be written either way: "0.5"
+// (a bare number is mm²) or "20 AWG". OMG compares them in mm² - these show
+// the same size in the other unit, from OMG's AWG / mm² table.
+
+const GAUGE_RANGE_ROLES = ['contact.min_gauge', 'contact.max_gauge'];
+
+function gaugeBoth(raw: string | undefined | null, table: Record<string, string | number>): string {
+    const text = String(raw ?? '').trim();
+    if (!text) return '';
+    const isAwg = /awg|#|\/0/i.test(text);
+    const number = parseFloat(text.replace(',', '.').replace(/^[^\d]*/, ''));
+    if (Number.isNaN(number)) return '';
+    if (isAwg) {
+        const awg = text.match(/(\d\/0|\d+)/)?.[1] || '';
+        const mm2 = table[awg];
+        return mm2 !== undefined ? `${awg} AWG = ${Number(mm2)} mm²` : `${awg} AWG`;
+    }
+    // nearest AWG size in the table
+    let best = '', diff = Infinity;
+    for (const [awg, mm2] of Object.entries(table)) {
+        const d = Math.abs(Number(mm2) - number);
+        if (d < diff) { diff = d; best = awg; }
+    }
+    return best ? `${number} mm² ≈ ${best} AWG` : `${number} mm²`;
+}
+
+function gaugeRange(min: string | undefined, max: string | undefined, table: Record<string, string | number>): string {
+    const lo = gaugeBoth(min, table), hi = gaugeBoth(max, table);
+    if (!lo && !hi) return '';
+    return lo === hi ? lo : `${lo || '?'} to ${hi || '?'}`;
+}
 
 // ==================== Parts table (like InvenTree's own part lists) ====================
 // Picture, part number (opens the part), IPN and description, plus a tick box
@@ -200,6 +233,7 @@ interface SetupState {
     fields: Record<string, FieldInfo>;
     missing_required: string[];
     standard_awg: string[];
+    awg_to_mm2: Record<string, string | number>;
     colours: string[];
     colour_roles: string[];
     awg_roles: string[];
@@ -243,6 +277,41 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
     useEffect(() => { load(); }, [load]);
 
     const profile: Profile | null = state && componentType ? state.profiles[componentType] || null : null;
+    // Steps: 1 what the part is (saved first - the OMG Cavities / Accessories
+    // panels only appear on a part InvenTree knows is a connector), 2 its
+    // parameters, 3 (connectors) cavities and accessories on their own panels.
+    const typeSaved = !!state && !!componentType && state.profile === componentType;
+    const [step, setStep] = useState<number | null>(null);
+    // The page's panel list was made before the type was saved - open the
+    // cavity / accessory panels with a page load so InvenTree adds them.
+    const [typeJustSaved, setTypeJustSaved] = useState(false);
+    useEffect(() => {
+        if (state && step === null) setStep(typeSaved ? 1 : 0);
+    }, [state, step, typeSaved]);
+
+    const saveType = useCallback(async () => {
+        if (!componentType) return;
+        if (typeSaved) { setStep(1); return; }
+        setSaving(true);
+        try {
+            const response = await context.api.post(`${PLUGIN}/part-setup/${partId}/`,
+                { component_type: componentType, values: {} }, LONG);
+            apply(response.data);
+            setTypeJustSaved(true);
+            setStep(1);
+            notifications.show({ color: 'green', title: 'OMG Part Setup', message: `Saved as ${componentType}.` });
+        } catch (error: any) {
+            setErrors(error?.response?.data?.errors || {});
+            notifications.show({ color: 'red', title: 'OMG Part Setup', message: apiError(error, 'Save failed.') });
+        } finally {
+            setSaving(false);
+        }
+    }, [componentType, typeSaved, context.api, partId, apply]);
+
+    const openPanel = (panel: string) => {
+        if (typeJustSaved) window.location.assign(`/web/part/${partId}/${panel}`);
+        else context.navigate(`/part/${partId}/${panel}`);
+    };
 
     const save = useCallback(async () => {
         if (!state || !profile) return;
@@ -255,6 +324,7 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
                 { component_type: componentType, values: payload }, LONG);
             apply(response.data);
             notifications.show({ color: 'green', title: 'OMG Part Setup', message: 'Saved.' });
+            if (componentType === 'Connector') setStep(2);
         } catch (error: any) {
             setErrors(error?.response?.data?.errors || {});
             notifications.show({ color: 'red', title: 'OMG Part Setup', message: apiError(error, 'Save failed.') });
@@ -287,17 +357,23 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
                     <Text size="xs" c="dimmed">{field.label}</Text>
                     <Group gap="xs">
                         <Text size="sm" c={values[role] ? undefined : 'dimmed'}>{values[role] || '(not set)'}</Text>
-                        <Button size="compact-xs" variant="light"
-                            onClick={() => context.navigate(`/part/${partId}/${MANAGED[role].panel}`)}>
-                            {MANAGED[role].button}</Button>
+                        {step === 2
+                            ? <Button size="compact-xs" variant="light" onClick={() => openPanel(MANAGED[role].panel)}>
+                                {MANAGED[role].button}</Button>
+                            : <Text size="xs" c="dimmed">- set in step 3</Text>}
                     </Group>
                     {errors[role] && <Text size="xs" c="red">{errors[role]}</Text>}
                 </Stack>
             );
         }
-        const label = `${field.label}${field.units ? ` (${field.units})` : ''}`;
-        const required = profile?.required.includes(role);
         const value = values[role] ?? '';
+        const isRange = GAUGE_RANGE_ROLES.includes(role);
+        const label = isRange
+            // OMG's label says how to write it (mm², or AWG with "AWG"); add the crossover for what's typed
+            ? `${field.label}${/awg/i.test(field.label) ? '' : ' - mm² (0.5) or AWG (20 AWG); a plain number is mm²'}${
+                value.trim() ? ` · ${gaugeBoth(value, state.awg_to_mm2 || {}) || 'not a size OMG can read'}` : ''}`
+            : `${field.label}${field.units ? ` (${field.units})` : ''}`;
+        const required = profile?.required.includes(role);
         const set = (v: string | null) => setValues((old) => ({ ...old, [role]: v ?? '' }));
         const common = {
             label: field.template + (required ? ' *' : ''),
@@ -343,41 +419,79 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
                 Pick what this part is, then fill in what OMG needs for it. Gauge mm² and AWG fill each
                 other in from OMG's AWG / mm² table; colours use OMG's colour list.
             </Text>
-            <Select
-                label="Component Type"
-                data={Object.keys(state.profiles)}
-                value={componentType || null}
-                onChange={(v) => setComponentType(v ?? '')}
-                disabled={!state.can_edit || !state.fields['part.component_type']?.exists}
-                error={!state.fields['part.component_type']?.exists
-                    ? `No '${state.fields['part.component_type']?.template}' template in InvenTree yet` : undefined}
-                placeholder="Pick a type"
-            />
-            {state.component_type && !state.profile && (
-                <Alert color="yellow">Component Type is "{state.component_type}", which OMG has no setup for.</Alert>
-            )}
-            {profile && (
-                <>
-                    {state.profile === componentType && state.missing_required.length > 0 && (
-                        <Group gap="xs">
-                            <Text size="sm">Missing:</Text>
-                            {state.missing_required.map((role) => (
-                                <Badge key={role} color="red" variant="light">{state.fields[role]?.template || role}</Badge>
-                            ))}
+            <Stepper active={step ?? 0} size="sm" onStepClick={(i) => {
+                if (i === 0 || typeSaved) setStep(i);
+            }} allowNextStepsSelect={false}>
+                <Stepper.Step label="What it is" description={typeSaved ? componentType : 'Component Type'}>
+                    <Stack gap="sm" mt="sm">
+                        <Select
+                            label="Component Type"
+                            data={Object.keys(state.profiles)}
+                            value={componentType || null}
+                            onChange={(v) => setComponentType(v ?? '')}
+                            disabled={!state.can_edit || !state.fields['part.component_type']?.exists}
+                            error={errors['part.component_type'] || (!state.fields['part.component_type']?.exists
+                                ? `No '${state.fields['part.component_type']?.template}' template in InvenTree yet` : undefined)}
+                            placeholder="Pick a type"
+                        />
+                        {state.component_type && !state.profile && (
+                            <Alert color="yellow">Component Type is "{state.component_type}", which OMG has no setup for.</Alert>
+                        )}
+                        {state.profile && componentType && state.profile !== componentType && (
+                            <Alert color="yellow">Saved as {state.profile} - saving changes it to {componentType}.</Alert>
+                        )}
+                        <Group>
+                            <Button onClick={saveType} loading={saving} disabled={!state.can_edit || !componentType}>
+                                {typeSaved ? 'Next' : 'Save type and continue'}</Button>
                         </Group>
+                    </Stack>
+                </Stepper.Step>
+
+                <Stepper.Step label="Details" description="What OMG needs">
+                    {profile && (
+                        <Stack gap="sm" mt="sm">
+                            {state.profile === componentType && state.missing_required.length > 0 && (
+                                <Group gap="xs">
+                                    <Text size="sm">Missing:</Text>
+                                    {state.missing_required.map((role) => (
+                                        <Badge key={role} color="red" variant="light">{state.fields[role]?.template || role}</Badge>
+                                    ))}
+                                </Group>
+                            )}
+                            {state.profile === componentType && state.missing_required.length === 0 && (
+                                <Badge color="green" variant="light">Everything OMG needs is set</Badge>
+                            )}
+                            <Title order={6}>Required</Title>
+                            {profile.required.map(fieldInput)}
+                            {profile.optional.length > 0 && <Title order={6}>Optional</Title>}
+                            {profile.optional.map(fieldInput)}
+                            <Group>
+                                <Button variant="default" onClick={() => setStep(0)}>Back</Button>
+                                <Button onClick={save} loading={saving} disabled={!state.can_edit}>
+                                    {componentType === 'Connector' ? 'Save and continue' : 'Save'}</Button>
+                            </Group>
+                        </Stack>
                     )}
-                    {state.profile === componentType && state.missing_required.length === 0 && (
-                        <Badge color="green" variant="light">Everything OMG needs is set</Badge>
-                    )}
-                    <Title order={6}>Required</Title>
-                    {profile.required.map(fieldInput)}
-                    {profile.optional.length > 0 && <Title order={6}>Optional</Title>}
-                    {profile.optional.map(fieldInput)}
-                    <Group>
-                        <Button onClick={save} loading={saving} disabled={!state.can_edit}>Save</Button>
-                    </Group>
-                </>
-            )}
+                </Stepper.Step>
+
+                {componentType === 'Connector' && (
+                    <Stepper.Step label="Cavities & accessories" description="On their own panels">
+                        <Stack gap="sm" mt="sm">
+                            <Text size="sm" c="dimmed">
+                                The connector's cavities (with its contacts, seals and blanks) and its locks, boots and
+                                covers are set on their own panels, picked from the parts that fit.
+                            </Text>
+                            {['connector.cavity_map', 'connector.contact_count', 'connector.required_accessories',
+                                'connector.preferred_accessories'].map(fieldInput)}
+                            <Group>
+                                <Button variant="default" onClick={() => setStep(1)}>Back</Button>
+                                <Button onClick={() => openPanel('omg-cavities')}>Open OMG Cavities</Button>
+                                <Button variant="light" onClick={() => openPanel('omg-accessories')}>Open OMG Accessories</Button>
+                            </Group>
+                        </Stack>
+                    </Stepper.Step>
+                )}
+            </Stepper>
         </Stack>
     );
 }
@@ -416,6 +530,7 @@ interface CavityState {
     series_choices: string[];               // the Contact Series selection list
     cavities: string[];                     // every cavity the saved map names
     sealings: string[];
+    awg_to_mm2: Record<string, string | number>;
 }
 
 const TYPES = ['Contact', 'Seal', 'Blank'];
@@ -610,7 +725,8 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                                         <Badge size="xs" variant="light" color={
                                             p.component_type === 'Contact' ? 'blue' : p.component_type === 'Seal' ? 'cyan' : 'gray'}>
                                             {p.component_type}</Badge>
-                                        {p['contact.min_gauge'] && <Text size="xs">{p['contact.min_gauge']} to {p['contact.max_gauge']}</Text>}
+                                        {p['contact.min_gauge'] && <Text size="xs">
+                                            {gaugeRange(p['contact.min_gauge'], p['contact.max_gauge'], state.awg_to_mm2 || {})}</Text>}
                                         {p['seal.min_od'] && <Text size="xs">OD {p['seal.min_od']} to {p['seal.max_od']} mm</Text>}
                                     </Stack>
                                 )} />

@@ -203,6 +203,8 @@ def part_setup_state(part, config):
         "fields": fields,
         "missing_required": missing,
         "standard_awg": config.get("standard_awg", []),
+        # AWG -> mm² (OMG's table) - the panel shows a contact's Min / Max Gauge in both units
+        "awg_to_mm2": config.get("awg_to_mm2", {}),
         "colours": [row[0] for row in config.get("colours") or []],
         "colour_roles": config.get("colour_roles", []),
         "awg_roles": config.get("awg_roles", []),
@@ -374,6 +376,7 @@ def cavity_state(part, config, extra_series=None):
         "by_series": by_series,
         "series_keys": {k: v for k, v in series_keys.items() if k in set(series)},
         "sealings": answers.get("sealings") or [],
+        "awg_to_mm2": config.get("awg_to_mm2", {}),
         "cavities": answers.get("cavities") or [],
         # Contact Series is picked from OMG's selection list, so a cavity's
         # series is always spelt like the contacts' own (no "DT16" vs "DT-16")
