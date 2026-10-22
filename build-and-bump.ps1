@@ -362,6 +362,21 @@ if (-not (Test-Path $hookSource) -or -not $hooksDir) {
 
 # ------------------------------------------------------------------ 7. what changed
 Step "Ready to commit"
+# Each build makes NEW hashed panel files (PartSetupPanel-<hash>.js) and removes
+# the old ones. New files aren't tracked yet, so PyCharm's commit window leaves
+# them out (under "Unversioned Files") - and a release without them breaks the
+# panels (the manifest names a file that isn't there). Stage the whole static/
+# folder, additions and removals, so they always go into the commit.
+if (-not $SkipBuild) {
+    git add -A -- omg_import_plugin/static
+    Write-Host "Staged the built panel files (omg_import_plugin/static) - new hashed files included."
+}
+$manifestFile = Join-Path $staticPath ".vite\manifest.json"
+if (Test-Path $manifestFile) {
+    $listed = (Get-Content $manifestFile -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $_.Value.file }
+    $absent = @($listed | Where-Object { -not (Test-Path (Join-Path $staticPath $_)) })
+    if ($absent.Count) { Fail "manifest.json names panel files that aren't there: $($absent -join ', ') - run without -SkipBuild." }
+}
 git status --short | Out-Host
 
 Write-Host ""

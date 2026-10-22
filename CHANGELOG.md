@@ -6,6 +6,8 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+- `build-and-bump.ps1` stages the built panel files (`omg_import_plugin/static`, new hashed files and removed old ones) so PyCharm's commit always includes them, and stops if `manifest.json` names a panel file that isn't there.
+
 ## 0.6.6 — 2026-10-22
 
 - **Parts shown like InvenTree's own tables:** the OMG Cavities panel's related contacts / seals / blanks and the OMG Accessories panel's parts to use are now tables with each part's picture, part number (opens the part), IPN and description, a tick box and a search box - instead of a line of part numbers or a dropdown.
