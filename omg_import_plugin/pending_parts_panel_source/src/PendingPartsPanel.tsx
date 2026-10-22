@@ -51,7 +51,7 @@ function PartLink({ context, pk, name, panel = 'omg-part-setup' }:
 }
 
 // Data-check problems that are fixed on the OMG Cavities panel
-const CAVITY_CHECKS = new Set(['cavity_map', 'count', 'series']);
+const CAVITY_CHECKS = new Set(['cavity_map', 'count', 'series', 'related']);
 // These calls reach OMG (and an import reaches Mouser per part) - far longer
 // than the 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
 const READ_TIMEOUT_MS = 60000;

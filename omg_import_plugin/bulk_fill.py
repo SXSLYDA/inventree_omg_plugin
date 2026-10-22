@@ -107,6 +107,14 @@ HD_INSERTS = {
 HD_INSERT_COUNT = {'18-8': 8, '18-14': 14, '18-21': 21, '24-16': 16, '24-23': 23, '24-31': 31, '24-33': 33}
 HD_SEAL_MAX_OD = {'20': {'N': 2.41, 'T': 2.41, 'E': 2.41}, '16': {'N': 3.40, 'T': 3.40, 'E': 3.05},
                   '12': {'N': 4.32, 'T': 4.32, 'E': 4.01}}
+# Contact plating from the description ("..., gold", "..., nickel", "CuSn, pre-tin"):
+# OMG puts gold contacts on twisted pairs and shielded cable cores
+_PLATING = re.compile(r'\b(gold|nickel|silver|tin|tinned|pre-tin)\b', re.I)
+PLATING_WORDS = {'gold': 'Gold', 'nickel': 'Nickel', 'silver': 'Silver', 'tin': 'Tin', 'tinned': 'Tin', 'pre-tin': 'Tin'}
+_SHIELDED = re.compile(r'\b(?:shield(?:ed)?|screen(?:ed)?|j1939|can ?bus)\b', re.I)
+# Molded-in contacts (buss bars, terminating resistors, diodes, J1939 "Y" connectors):
+# nothing is crimped into their cavities, so no map - it would ask for a blank in each
+_MOLDED = re.compile(r'\bbuss(?:es)?\b|terminating resistor|\bmolded\b|\bdiode\b', re.I)
 # Caterpillar's own 70-pin ECM plugs (147-1445, 147-1446, 160-7689): 1-70, size 16 contacts
 _CAT_70_PIN = re.compile(r'\b(?:cat|caterpillar)\b.*\b70[- ]?pin\b', re.I)
 # Deutsch blanking / sealing plugs: 0413-217-1605 = size 16, 0413-204-2005 = size 20;
@@ -264,7 +272,7 @@ def _proposals(part, config, lists, current):
         if angle:
             values['accessory.exit_angle'] = {'90': '90', '45': '45', '180': 'Straight', '0': 'Straight'}.get(
                 angle.group(1), '')
-    if ctype == 'Connector':
+    if ctype == 'Connector' and not _MOLDED.search(data['description']):
         cavity_map, count = deutsch_cavity_map(part.name, data.get('contact_count'), part.description)
         own_count = (current.get((((config.get('roles') or {}).get('connector.contact_count') or {})
                                   .get('template') or '').lower()) or '').strip()
@@ -280,6 +288,12 @@ def _proposals(part, config, lists, current):
             values['connector.contact_count'] = str(count)
     if ctype == 'Contact' and not values.get('part.contact_series'):
         values['part.contact_series'] = deutsch_contact_series(part.name)
+    if ctype == 'Contact':
+        plating = _PLATING.search(text)
+        if plating:
+            values['contact.plating'] = PLATING_WORDS[plating.group(1).lower()]
+    if ctype == 'Multicore' and _SHIELDED.search(text):
+        values['multicore.shielded'] = 'Yes'
     if ctype == 'Blank' and not values.get('part.contact_series'):
         values['part.contact_series'] = deutsch_blank_series(part.name)
     if ctype == 'Seal':
