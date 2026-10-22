@@ -6,6 +6,11 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.6 — 2026-10-22
+
+- **Parts shown like InvenTree's own tables:** the OMG Cavities panel's related contacts / seals / blanks and the OMG Accessories panel's parts to use are now tables with each part's picture, part number (opens the part), IPN and description, a tick box and a search box - instead of a line of part numbers or a dropdown.
+- **OMG Part Setup on a connector:** Cavity Map, Contact Count, Required and Preferred Accessories are shown with a button to the panel that sets them (OMG Cavities / OMG Accessories), where they're picked from the parts that fit, instead of free-text boxes.
+
 ## 0.6.5 — 2026-10-22
 
 - **Review list: set-up problems point at the part, not at Mouser.** When the part is already linked and the problem is how it's set up (no related contacts or blank, a lock to choose, a Cavity Map problem), the item shows a button straight to the fix - "Fix related parts / cavities" (OMG Cavities panel) or "Choose it on the part (Preferred Accessories)" (OMG Part Setup) - instead of Import from Mouser / Search / Create part. Those are still there under "Use a different part...". Rebuild the panels for this release (no `-SkipBuild`).

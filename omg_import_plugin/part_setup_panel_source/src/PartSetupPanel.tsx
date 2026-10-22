@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Autocomplete, Badge, Button, Checkbox, Group, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Autocomplete, Badge, Button, Checkbox, Group, Image, Loader, MultiSelect, Select, Stack, Table, Text, TextInput, Title } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
@@ -17,6 +17,78 @@ const PLUGIN = '/plugin/omg-harness-import';
 // 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
 const OMG_TIMEOUT_MS = 60000;
 const LONG = { timeout: OMG_TIMEOUT_MS };
+
+// ==================== Parts table (like InvenTree's own part lists) ====================
+// Picture, part number (opens the part), IPN and description, plus a tick box
+// and a search box - for picking related parts and accessories.
+
+interface TablePart { pk: number; name: string; ipn?: string; description?: string; thumbnail?: string; }
+
+function PartNameLink({ context, part, panel = '' }: { context: InvenTreePluginContext; part: TablePart; panel?: string }) {
+    const path = `/part/${part.pk}/${panel}`;
+    return (
+        <Anchor size="sm" href={`/web${path}`} onClick={(e: React.MouseEvent) => {
+            if (e.ctrlKey || e.metaKey || e.shiftKey || e.button !== 0) return;
+            e.preventDefault();
+            context.navigate(path);
+        }}>{part.name}</Anchor>
+    );
+}
+
+function PartsTable<T extends TablePart>({ context, parts, picked, onToggle, disabled, extra, extraTitle, search = true }: {
+    context: InvenTreePluginContext;
+    parts: T[];
+    picked: Set<number>;
+    onToggle: (pk: number, on: boolean) => void;
+    disabled?: boolean;
+    extra?: (p: T) => React.ReactNode;
+    extraTitle?: string;
+    search?: boolean;
+}) {
+    const [term, setTerm] = useState('');
+    const words = term.toLowerCase().split(/\s+/).filter(Boolean);
+    const shown = parts.filter((p) => {
+        const text = `${p.name} ${p.ipn || ''} ${p.description || ''}`.toLowerCase();
+        return words.every((w) => text.includes(w));
+    });
+    return (
+        <Stack gap={4}>
+            {search && parts.length > 5 && (
+                <TextInput size="xs" placeholder="Search part number or description" value={term}
+                    onChange={(e) => setTerm(e.currentTarget.value)} />
+            )}
+            <Table withTableBorder highlightOnHover verticalSpacing={4}>
+                <Table.Thead><Table.Tr>
+                    <Table.Th w={36} /><Table.Th w={44} /><Table.Th>Part</Table.Th><Table.Th>Description</Table.Th>
+                    {extra && <Table.Th>{extraTitle || ''}</Table.Th>}
+                </Table.Tr></Table.Thead>
+                <Table.Tbody>
+                    {shown.map((p) => (
+                        <Table.Tr key={p.pk} style={{ cursor: disabled ? undefined : 'pointer' }}
+                            onClick={(e) => {
+                                if (disabled || (e.target as HTMLElement).closest('a, input')) return;
+                                onToggle(p.pk, !picked.has(p.pk));
+                            }}>
+                            <Table.Td><Checkbox size="xs" checked={picked.has(p.pk)} disabled={disabled}
+                                onChange={(e) => onToggle(p.pk, e.currentTarget.checked)} /></Table.Td>
+                            <Table.Td>{p.thumbnail
+                                ? <Image src={p.thumbnail} w={36} h={36} fit="contain" radius="sm" />
+                                : <div style={{ width: 36, height: 36 }} />}</Table.Td>
+                            <Table.Td><PartNameLink context={context} part={p} />
+                                {p.ipn ? <Text size="xs" c="dimmed">{p.ipn}</Text> : null}</Table.Td>
+                            <Table.Td><Text size="sm">{p.description || ''}</Text></Table.Td>
+                            {extra && <Table.Td>{extra(p)}</Table.Td>}
+                        </Table.Tr>
+                    ))}
+                    {shown.length === 0 && (
+                        <Table.Tr><Table.Td colSpan={extra ? 5 : 4}><Text size="sm" c="dimmed">
+                            {parts.length ? `Nothing matches "${term}".` : 'No parts.'}</Text></Table.Td></Table.Tr>
+                    )}
+                </Table.Tbody>
+            </Table>
+        </Stack>
+    );
+}
 
 // ==================== This part's problems (OMG's Part Data Check) ====================
 // The same check as the OMG Parts widget's "Needs setup" tab, for this one
@@ -195,9 +267,34 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
     if (!state) return <Alert color="red">Couldn't load the part setup.</Alert>;
     if (state.error) return <Alert color="orange" title="OMG Part Setup">{state.error}</Alert>;
 
+    // Set on their own panels, where they're picked from the parts that fit
+    // (accessories) or edited as a grid with the related contacts (cavities).
+    const MANAGED: Record<string, { panel: string; button: string }> = componentType === 'Connector' ? {
+        'connector.cavity_map': { panel: 'omg-cavities', button: 'Edit on OMG Cavities' },
+        'connector.contact_count': { panel: 'omg-cavities', button: 'Set from the Cavity Map (OMG Cavities)' },
+        'connector.required_accessories': { panel: 'omg-accessories', button: 'Choose on OMG Accessories' },
+        'connector.preferred_accessories': { panel: 'omg-accessories', button: 'Choose on OMG Accessories' },
+    } : {};
+
     const fieldInput = (role: string) => {
         const field = state.fields[role];
         if (!field) return null;
+        if (MANAGED[role]) {
+            const required = profile?.required.includes(role);
+            return (
+                <Stack key={role} gap={2}>
+                    <Text size="sm" fw={500}>{field.template}{required ? ' *' : ''}</Text>
+                    <Text size="xs" c="dimmed">{field.label}</Text>
+                    <Group gap="xs">
+                        <Text size="sm" c={values[role] ? undefined : 'dimmed'}>{values[role] || '(not set)'}</Text>
+                        <Button size="compact-xs" variant="light"
+                            onClick={() => context.navigate(`/part/${partId}/${MANAGED[role].panel}`)}>
+                            {MANAGED[role].button}</Button>
+                    </Group>
+                    {errors[role] && <Text size="xs" c="red">{errors[role]}</Text>}
+                </Stack>
+            );
+        }
         const label = `${field.label}${field.units ? ` (${field.units})` : ''}`;
         const required = profile?.required.includes(role);
         const value = values[role] ?? '';
@@ -505,13 +602,19 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                         <Title order={6}>Series {series} - tick the parts this connector uses</Title>
                         {parts.length === 0 && <Text size="sm" c="dimmed">No InvenTree parts with Contact Series
                             "{series}" (and a Component Type of Contact, Seal or Blank) yet.</Text>}
-                        {parts.map((p) => (
-                            <Checkbox key={p.pk} checked={related.has(p.pk)} disabled={!state.can_edit}
-                                onChange={(e) => toggle(p.pk, e.currentTarget.checked)}
-                                label={`${p.component_type}: ${p.name}${p.ipn ? ` (${p.ipn})` : ''}${
-                                    p['contact.min_gauge'] ? ` - ${p['contact.min_gauge']} to ${p['contact.max_gauge']}` : ''}${
-                                    p['seal.min_od'] ? ` - OD ${p['seal.min_od']} to ${p['seal.max_od']} mm` : ''}`} />
-                        ))}
+                        {parts.length > 0 && (
+                            <PartsTable context={context} parts={parts} picked={related} disabled={!state.can_edit}
+                                onToggle={toggle} extraTitle="Type / fits"
+                                extra={(p) => (
+                                    <Stack gap={0}>
+                                        <Badge size="xs" variant="light" color={
+                                            p.component_type === 'Contact' ? 'blue' : p.component_type === 'Seal' ? 'cyan' : 'gray'}>
+                                            {p.component_type}</Badge>
+                                        {p['contact.min_gauge'] && <Text size="xs">{p['contact.min_gauge']} to {p['contact.max_gauge']}</Text>}
+                                        {p['seal.min_od'] && <Text size="xs">OD {p['seal.min_od']} to {p['seal.max_od']} mm</Text>}
+                                    </Stack>
+                                )} />
+                        )}
                     </Stack>
                 );
             })}
@@ -529,6 +632,7 @@ interface AccessoryPart {
     name: string;
     ipn: string;
     description: string;
+    thumbnail?: string;
     type: string;
     series: string;
     side: string;
@@ -561,11 +665,8 @@ interface AccessoryState {
     problems?: string[];
     // accessory
     fits?: { series: string; side: string; ways: string } | null;
-    connectors?: { pk: number; name: string; description: string; connector: string; required: boolean; preferred: boolean }[];
+    connectors?: { pk: number; name: string; description: string; connector: string; required: boolean; preferred: boolean; thumbnail?: string }[];
 }
-
-const accessoryLabel = (p: AccessoryPart) =>
-    `${p.name}${p.exit ? ` [${p.exit} exit]` : ''}${p.description ? ` - ${p.description}` : ''}`;
 
 interface EditRow {
     kind: string;
@@ -654,7 +755,10 @@ function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
                         <Table.Tbody>
                             {list.map((c) => (
                                 <Table.Tr key={c.pk}>
-                                    <Table.Td><a href={`/web/part/${c.pk}/`}>{c.name}</a></Table.Td>
+                                    <Table.Td><Group gap="xs" wrap="nowrap">
+                                        {c.thumbnail && <Image src={c.thumbnail} w={32} h={32} fit="contain" />}
+                                        <PartNameLink context={context} part={c} panel="omg-accessories" />
+                                    </Group></Table.Td>
                                     <Table.Td><Text size="sm">{c.description}</Text></Table.Td>
                                     <Table.Td><Group gap={4}>
                                         {c.required ? <Badge color="red" variant="light">required</Badge>
@@ -703,15 +807,31 @@ function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
                                     onChange={(e) => setRow(i, { quantity: e.currentTarget.value })} />}</Table.Td>
                                 <Table.Td>
                                     {r.options.length === 0 && <Badge color="red" variant="light">nothing fits yet</Badge>}
-                                    {r.options.length === 1 && <Text size="sm">{accessoryLabel(r.options[0])}</Text>}
-                                    {r.options.length > 1 && (
-                                        <MultiSelect size="xs" disabled={!state.can_edit} clearable
-                                            placeholder={r.preferred.length ? '' : (r.required ? 'Ask when building the harness' : 'No preference')}
-                                            data={r.options.map((p) => ({ value: String(p.pk), label: accessoryLabel(p) }))}
-                                            value={r.preferred} onChange={(v) => setRow(i, { preferred: v })} />
+                                    {r.options.length === 1 && (
+                                        <Group gap="xs" wrap="nowrap">
+                                            {r.options[0].thumbnail && <Image src={r.options[0].thumbnail} w={32} h={32} fit="contain" />}
+                                            <Stack gap={0}>
+                                                <PartNameLink context={context} part={r.options[0]} />
+                                                <Text size="xs" c="dimmed">{r.options[0].description}</Text>
+                                            </Stack>
+                                        </Group>
                                     )}
-                                    {r.preferred.length > 1 && <Text size="xs" c="dimmed">
-                                        All {r.preferred.length} are needed (one of each).</Text>}
+                                    {r.options.length > 1 && (
+                                        <Stack gap={2}>
+                                            <Text size="xs" c="dimmed">
+                                                {r.preferred.length === 0
+                                                    ? (r.required ? 'Tick the one to use - none ticked = chosen when building the harness.'
+                                                        : 'No preference - tick one to use it.')
+                                                    : r.preferred.length > 1 ? `All ${r.preferred.length} ticked are needed (one of each).`
+                                                        : 'This one is used.'}
+                                            </Text>
+                                            <PartsTable context={context} parts={r.options} disabled={!state.can_edit}
+                                                picked={new Set(r.preferred.map(Number))}
+                                                onToggle={(pk, on) => setRow(i, { preferred: on
+                                                    ? [...r.preferred, String(pk)] : r.preferred.filter((x) => x !== String(pk)) })}
+                                                extraTitle="Exit" extra={(p) => p.exit ? <Text size="xs">{p.exit}</Text> : null} />
+                                        </Stack>
+                                    )}
                                 </Table.Td>
                             </Table.Tr>
                         ))}

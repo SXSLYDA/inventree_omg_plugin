@@ -275,11 +275,31 @@ def _related_parts(part):
     return [r.part_2 if r.part_1_id == part.pk else r.part_1 for r in rows]
 
 
+def part_thumbnail(part):
+    """The part's image thumbnail URL, as InvenTree's own part tables show it ('' if none)."""
+    try:
+        url = part.get_thumbnail_url()
+    except Exception:       # no image, or the image file is missing on disk
+        return ""
+    return "" if not url or "blank_image" in url else url
+
+
+def add_thumbnails(rows):
+    """Fill 'thumbnail' on every {pk, ...} dict in rows (one query)."""
+    from part.models import Part
+    rows = [r for r in rows if isinstance(r, dict) and r.get("pk")]
+    parts = {p.pk: p for p in Part.objects.filter(pk__in={r["pk"] for r in rows})}
+    for r in rows:
+        r["thumbnail"] = part_thumbnail(parts[r["pk"]]) if r["pk"] in parts else ""
+    return rows
+
+
 def _part_info(part, config):
     type_name = _role_template(config, "part.component_type")
     series_name = _role_template(config, "part.contact_series")
     series = (get_part_parameter_str(part, series_name) if series_name else None) or ""
     info = {"pk": part.pk, "name": part.name, "ipn": part.IPN or "", "description": part.description or "",
+            "thumbnail": part_thumbnail(part),
             "component_type": (get_part_parameter_str(part, type_name) if type_name else None) or "",
             "series": series}
     for role in ("contact.min_gauge", "contact.max_gauge", "seal.min_od", "seal.max_od"):

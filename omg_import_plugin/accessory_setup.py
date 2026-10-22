@@ -21,7 +21,8 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .inventree_native_lookup import get_part_parameter_str
-from .part_setup import _can_edit, _get_part, _plugin, _role_template, _set_parameter, _template, omg_call, omg_part_config
+from .part_setup import (_can_edit, _get_part, _plugin, _role_template, _set_parameter, _template, add_thumbnails,
+                         omg_call, omg_part_config)
 
 # roles the panel needs templates for (exit angle / direction are optional)
 NEEDED_ROLES = ('part.component_type', 'connector.series', 'connector.side', 'accessory.ways',
@@ -101,7 +102,7 @@ class AccessorySetupView(APIView):
         state, error = accessory_state(part, config, refresh=request.query_params.get("refresh") == "1")
         if error:
             return Response({"error": error})
-        return Response({"error": None, "can_edit": _can_edit(request.user), **state})
+        return Response({"error": None, "can_edit": _can_edit(request.user), **_with_thumbnails(state)})
 
     def post(self, request, pk):
         part = _get_part(pk)
@@ -116,7 +117,14 @@ class AccessorySetupView(APIView):
                                                    link_related=request.data.get("link_related", True) is not False)
         if errors:
             return Response({"detail": " ".join(errors), "errors": errors}, status=status.HTTP_400_BAD_REQUEST)
-        return Response({"error": None, "can_edit": True, **state})
+        return Response({"error": None, "can_edit": True, **_with_thumbnails(state)})
+
+
+def _with_thumbnails(state):
+    """Part pictures for the panel's tables - accessory options and the connectors an accessory fits."""
+    add_thumbnails([o for k in state.get("kinds") or [] for o in k.get("options") or []]
+                   + list(state.get("connectors") or []))
+    return state
 
 
 def is_accessory_part(part, config):
