@@ -12,7 +12,10 @@ Backend for the two part panels (PartSetupPanel.tsx):
                     series offered to add. The map is the one list of the
                     connector's cavities - ranges (1-12, A-D) or single ones
                     (A, B, C, E) - and saving it sets Contact Count to match.
-                    Series come from the Contact Series selection list.
+                    Series come from the Contact Series selection list, plus
+                    OMG's Solder series for solder-cup cavities (the wire is
+                    soldered to the connector's pin - no contact, seal or
+                    blank).
 
 What a type needs, the template names, AWG table and colour list all come
 from OMG (/api/parts/part-profiles/), and the Cavity Map is read and written
@@ -371,7 +374,8 @@ def cavity_state(part, config, extra_series=None):
         "map_template": map_name,
         "map_template_exists": bool(map_name and _template(map_name)),
         "raw": raw,
-        "rows": [{k: r.get(k) for k in ("cavities", "series", "sealing", "max_od", "problems")} for r in rows],
+        "rows": [{k: r.get(k) for k in ("cavities", "series", "solder", "sealing", "max_od", "problems")}
+                 for r in rows],
         "related": related,
         "by_series": by_series,
         "series_keys": {k: v for k, v in series_keys.items() if k in set(series)},
@@ -381,6 +385,8 @@ def cavity_state(part, config, extra_series=None):
         # Contact Series is picked from OMG's selection list, so a cavity's
         # series is always spelt like the contacts' own (no "DT16" vs "DT-16")
         "series_choices": _series_choices(config),
+        # solder-cup cavities: OMG's series name for them (offered with the choices)
+        "solder_series": answers.get("solder_series") or "",
     }, None
 
 
@@ -389,11 +395,13 @@ def _series_choices(config):
     return list_values((role_list(config, "part.contact_series") or {}).get("list"))
 
 
-def _snap_series(config, rows):
+def _snap_series(config, rows, solder=()):
     """
     (rows with each series in the list's own spelling, errors) - a series
     that isn't in the Contact Series list is refused, so a cavity can never
-    name a series no contact has. No list yet = rows unchanged.
+    name a series no contact has. No list yet = rows unchanged. `solder`:
+    the series written that are OMG's solder-cup series - not in the list
+    (no contacts), OMG writes them its own way.
     """
     choices = _series_choices(config)
     if not choices:
@@ -401,7 +409,7 @@ def _snap_series(config, rows):
     out, errors = [], []
     for i, row in enumerate(rows, start=1):
         series = str(row.get("series") or "").strip()
-        if series:
+        if series and series not in solder:
             snapped, unknown = snap(series, choices, exact=True)
             if unknown:
                 hint = suggest(series, choices)
@@ -417,7 +425,13 @@ def save_cavities(part, config, rows, related_add, related_remove):
     """Write the Cavity Map parameter and add / remove related parts. Returns errors (list)."""
     from django.core.exceptions import ValidationError
     from part.models import Part, PartRelated
-    rows, errors = _snap_series(config, rows or [])
+    rows = rows or []
+    written = sorted({str(r.get("series") or "").strip() for r in rows} - {""})
+    answers, error = omg_rules(is_solder=written) if written else ({}, None)
+    if error:
+        return [error]
+    solder = {v for v, yes in (answers.get("is_solder") or {}).items() if yes}
+    rows, errors = _snap_series(config, rows, solder)
     if errors:
         return errors
     answers, error = omg_rules(format_cavity_map=rows)

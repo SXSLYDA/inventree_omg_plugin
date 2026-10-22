@@ -42,7 +42,10 @@ from .selection_match import join_items, split_items, suggest
 # not a connector, and "Cavity plug" a blank, not a plug.
 TYPE_RULES = (
     # left for a person: OMG treats these specially, or they aren't one part kind
-    ('', (r'splice plug', r'connector seal,', r'^seal, front', r'panel nut', r'lockwasher', r'jam nut')),
+    # a plug whose pins are bussed together (bought or built, its own part) - before the
+    # way-count connector rule: "Plug, DT, 12 way, bussed" is a splice plug
+    ('Splice Plug', (r'splice plug', r'jumper plug', r'\bbuss(?:ed)?\b(?! ?bar)')),
+    ('', (r'connector seal,', r'^seal, front', r'panel nut', r'lockwasher', r'jam nut')),
     ('Secondary Lock', (r'secondary lock', r'\btpa\b')),
     ('Lock', (r'wedge ?lock', r'^lock\b', r'\block,')),
     ('Holding Plate', (r'holding plate',)),
@@ -114,6 +117,12 @@ PLATING_WORDS = {'gold': 'Gold', 'nickel': 'Nickel', 'silver': 'Silver', 'tin': 
 _SHIELDED = re.compile(r'\b(?:shield(?:ed)?|screen(?:ed)?|j1939|can ?bus)\b', re.I)
 # Molded-in contacts (buss bars, terminating resistors, diodes, J1939 "Y" connectors):
 # nothing is crimped into their cavities, so no map - it would ask for a blank in each
+# Solder-cup connectors: the wire is soldered to the connector's own pin, so
+# no separate contacts - every cavity is OMG's series "Solder". Not PCB
+# solder tails / pins (board connectors, not harness ones).
+_SOLDER = re.compile(r'\bsolder(?:\s*(?:cups?|buckets?|terminations?|terminals?|contacts?))?\b', re.I)
+_PCB = re.compile(r'\b(?:pcb|board|through[ -]?hole|tht|smt|smd)\b', re.I)
+SOLDER_SERIES = 'Solder'       # OMG's cavity_map.SOLDER (OMG accepts any case)
 _MOLDED = re.compile(r'\bbuss(?:es)?\b|terminating resistor|\bmolded\b|\bdiode\b', re.I)
 # Caterpillar's own 70-pin ECM plugs (147-1445, 147-1446, 160-7689): 1-70, size 16 contacts
 _CAT_70_PIN = re.compile(r'\b(?:cat|caterpillar)\b.*\b70[- ]?pin\b', re.I)
@@ -152,6 +161,17 @@ def deutsch_cavity_map(name, ways=None, description=''):
             (f"1-{count}" if count > 1 else '1')
         return f"{cavities}: {series} / mat", count
     return '', 0
+
+
+def solder_cavity_map(description, ways=None):
+    """('1-9: Solder / none', 9) for a solder-cup connector with a known way count, else ('', 0)."""
+    text = _norm_text(description)
+    if not ways or not _SOLDER.search(text) or _PCB.search(text):
+        return '', 0
+    count = int(ways)
+    if not 1 <= count <= 200:
+        return '', 0
+    return (f"1-{count}" if count > 1 else '1') + f": {SOLDER_SERIES} / none", count
 
 
 def deutsch_contact_series(name):
@@ -264,7 +284,7 @@ def _proposals(part, config, lists, current):
     text = data['description'].lower()
     accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Terminal', 'Contact', 'Seal', 'Blank')
     if accessory:
-        if 'plug' in text and 'receptacle' in text:
+        if 'plug' in text and 'receptacle' in text and ctype != 'Splice Plug':
             values['connector.side'] = 'Both'      # "for plug or recept."
         if data.get('contact_count'):
             values['accessory.ways'] = str(data['contact_count'])
@@ -276,10 +296,13 @@ def _proposals(part, config, lists, current):
         cavity_map, count = deutsch_cavity_map(part.name, data.get('contact_count'), part.description)
         own_count = (current.get((((config.get('roles') or {}).get('connector.contact_count') or {})
                                   .get('template') or '').lower()) or '').strip()
+        solder = not cavity_map
+        if solder:
+            cavity_map, count = solder_cavity_map(part.description, data.get('contact_count'))
         if cavity_map and own_count and own_count != str(count):
             cavity_map = ''     # its Contact Count says otherwise - leave the map for a person
         series_list = lists.get('part.contact_series')
-        if cavity_map and series_list:
+        if cavity_map and series_list and not solder:
             series = cavity_map.split(': ', 1)[1].split(' / ')[0]
             snapped = suggest(series, series_list)
             cavity_map = cavity_map.replace(f": {series} /", f": {snapped} /") if snapped else ''

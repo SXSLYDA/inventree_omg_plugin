@@ -6,7 +6,15 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
-## 0.6.7 — 2026-10-22
+## 0.6.8 — 2026-10-22
+
+- **Splice plugs** (needs OMG with the Splice Plug type): a new Component Type, Splice Plug - a plug whose pins are bussed together, bought complete or built from its own BOM, either way its own part and one line on the harness BOM. It fits connectors like other accessories (Connector Series, Ways, and Side = the side of the connector it plugs into, so a splice plug that's a plug has Side Receptacle), but it's only fitted where the wiring diagram has one: the OMG Accessories panel never offers it as a connector's Required Accessory. New optional parameter **Bussed Pins** ("A, B, C; D, E" - groups joined together) for later OMG checks; OMG's Part Data Check flags groups it can't read. Auto-fill types "splice plug" / "jumper plug" / "bussed" parts as Splice Plug and sets the Side the right way round. Run OMG's InvenTree Settings > "Set up lists" (Component Type gets Splice Plug) and "Create missing templates" (Bussed Pins) first.
+
+- **Caps that are connector housings** (a plug fitted as a cap): the harness BOM now gets a blank for every cavity of the cap (from its Cavity Map and related blank) and the cap's own Required Accessories (its lock) - the "cap_accessories" lines OMG sends. A finished cap (Component Type Cover) is just its own line, as before.
+
+- **Solder-cup connectors** (needs OMG with the Solder series): on the OMG Cavities panel pick the series "Solder" for cavities whose wire is soldered straight to the connector's pin - OMG then wants no contact, wire seal or blank for them (no more "no related contact" problems). Sealing can be mat or none, not individual. Set Strip Length and Min / Max Gauge on the connector itself (OMG Part Setup, now offered for connectors) and OMG checks the wires against them. Auto-fill sets "1-N: Solder / none" and Contact Count for a connector whose description says solder (solder cup, solder termination ...) and gives its way count - not PCB / board connectors.
+
+- **Contact Min / Max Gauge shown in both units:** OMG Part Setup says how to write them (mm², e.g. 0.5, or AWG with "AWG", e.g. 20 AWG - a plain number is mm²) and shows the crossover as you type ("20 AWG = 0.5 mm²", "1.5 mm² ≈ 16 AWG"); the OMG Cavities parts table shows each contact's range the same way. Needs OMG with the AWG / mm² table used for contacts.
 
 - **OMG Part Setup is a 3-step form:** 1 What it is (Component Type - saved first, "Save type and continue"), 2 Details (its parameters), 3 for a connector, Cavities & accessories (buttons to the OMG Cavities / OMG Accessories panels). Those panels only appear on a part InvenTree knows is a connector, so the type is saved before you're sent there - and the page reloads to show them when the type was only just saved.
 

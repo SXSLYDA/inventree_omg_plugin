@@ -269,9 +269,10 @@ def _apply_omg_part_logic(batch, part_logic, bom_totals):
     the harness-wide total (adding per connector part used to overwrite a
     shared contact's count with the last connector's).
     """
-    # seals: one per individually sealed cavity (OMG Cavity Map) - an older
-    # OMG simply doesn't send the key
-    for kind in ("contacts", "seals", "blanks"):
+    # seals: one per individually sealed cavity (OMG Cavity Map);
+    # cap_accessories: the lock etc. of a connector housing fitted as a cap
+    kinds = {"contacts": "contact", "seals": "seal", "blanks": "blank", "cap_accessories": "cap accessory"}
+    for kind, what in kinds.items():
         for line in part_logic.get(kind, []):
             sub_part = Part.objects.filter(pk=line.get("inventree_pk")).first()
             if sub_part is None:
@@ -279,7 +280,7 @@ def _apply_omg_part_logic(batch, part_logic, bom_totals):
                 UnresolvedImportItem.objects.create(
                     batch=batch, part_number=line.get("name") or f"InvenTree part {line.get('inventree_pk')}", quantity=0,
                     reason=UnresolvedImportItem.Reason.NOT_FOUND,
-                    notes=(f"OMG chose this part (InvenTree pk {line.get('inventree_pk')}) as a {kind[:-1]} for "
+                    notes=(f"OMG chose this part (InvenTree pk {line.get('inventree_pk')}) as a {what} for "
                            f"{where}, but it no longer exists in InvenTree - was it deleted?"),
                 )
                 continue

@@ -523,11 +523,12 @@ interface CavityState {
     map_template: string;
     map_template_exists: boolean;
     raw: string;
-    rows: { cavities: string; series: string; sealing: string; max_od: number | null; problems: string[] }[];
+    rows: { cavities: string; series: string; solder: boolean; sealing: string; max_od: number | null; problems: string[] }[];
     related: PartInfo[];
     by_series: Record<string, PartInfo[]>;
     series_keys: Record<string, string>;    // series as written -> OMG's comparison key
     series_choices: string[];               // the Contact Series selection list
+    solder_series: string;                  // OMG's series for solder-cup cavities (no contact, seal or blank)
     cavities: string[];                     // every cavity the saved map names
     sealings: string[];
     awg_to_mm2: Record<string, string | number>;
@@ -575,7 +576,9 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
 
     // Parts for series typed in the grid but not looked up yet
     const lookUp = useCallback(async () => {
-        const series = [...new Set(rows.map((r) => r.series.trim()).filter(Boolean))];
+        const solderName = (state?.solder_series || '').toLowerCase();
+        const series = [...new Set(rows.map((r) => r.series.trim())
+            .filter((v) => v && v.toLowerCase() !== solderName))];
         if (!series.length) return;
         try {
             const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`,
@@ -585,7 +588,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
         } catch (error: any) {
             notifications.show({ color: 'red', title: 'OMG Cavities', message: apiError(error, 'Look-up failed.') });
         }
-    }, [rows, context.api, partId]);
+    }, [rows, state, context.api, partId]);
 
     const relatedParts = useMemo(() => {
         const all: Record<number, PartInfo> = {};
@@ -633,7 +636,11 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     if (!state) return <Alert color="red">Couldn't load the cavities.</Alert>;
     if (state.error) return <Alert color="orange" title="OMG Cavities">{state.error}</Alert>;
 
-    const seriesList = [...new Set(rows.map((r) => r.series.trim()).filter(Boolean))];
+    // solder cups: the wire is soldered to the connector's pin - no parts to look up
+    const solder = state.solder_series || '';
+    const isSolder = (row: CavityRow) => !!solder && row.series.trim().toLowerCase() === solder.toLowerCase();
+    const seriesChoices = [...(state.series_choices || []), ...(solder ? [solder] : [])];
+    const seriesList = [...new Set(rows.filter((r) => !isSolder(r)).map((r) => r.series.trim()).filter(Boolean))];
     const relatedOfSeries = (series: string, type: string) => Object.values(relatedParts).filter((p) =>
         related.has(p.pk) && (p.series_key || `raw:${p.series}`) === keyOf(series)
         && (p.component_type || '').toLowerCase() === type.toLowerCase());
@@ -646,7 +653,10 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                 with the contact series it takes, how it's sealed, and the largest wire insulation OD it
                 accepts. This is the one list of cavities: OMG's pinout (empty cavities), blanks and
                 Contact Count all come from it. OMG picks each wire end's contact, seal and every unused
-                cavity's blank from the related parts of that series.
+                cavity's blank from the related parts of that series. Solder-cup cavities: pick the
+                series "{state.solder_series}" - the wire is soldered to the connector's own pin, so no
+                contact, seal or blank (set Strip Length and Min / Max Gauge on this connector in OMG Part
+                Setup for the cups).
             </Text>
             {!state.map_template_exists && (
                 <Alert color="red">No '{state.map_template}' parameter template in InvenTree yet - create it
@@ -671,24 +681,27 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                                 <Table.Td>{(state.series_choices || []).length
                                     // From the Contact Series list, so it always matches the contacts' own spelling
                                     ? <Select size="xs" searchable placeholder="Contact series"
-                                        data={row.series && !state.series_choices.includes(row.series)
-                                            ? [row.series, ...state.series_choices] : state.series_choices}
-                                        value={row.series || null} onChange={(v) => setRow(i, { series: v || '' })}
-                                        error={row.series && !state.series_choices.includes(row.series)
+                                        data={row.series && !seriesChoices.includes(row.series)
+                                            ? [row.series, ...seriesChoices] : seriesChoices}
+                                        value={row.series || null}
+                                        onChange={(v) => setRow(i, { series: v || '',
+                                            ...(v === solder && row.sealing === 'individual' ? { sealing: 'none' } : {}) })}
+                                        error={row.series && !seriesChoices.includes(row.series)
                                             ? 'Not in the Contact Series list' : undefined} />
                                     : <TextInput size="xs" value={row.series} placeholder="e.g. DT-16"
                                         onChange={(e) => setRow(i, { series: e.currentTarget.value })} />}</Table.Td>
-                                <Table.Td><Select size="xs" data={state.sealings} value={row.sealing || 'none'}
+                                <Table.Td><Select size="xs" value={row.sealing || 'none'}
+                                    data={isSolder(row) ? state.sealings.filter((v) => v !== 'individual') : state.sealings}
                                     onChange={(v) => setRow(i, { sealing: v ?? 'none' })} allowDeselect={false} /></Table.Td>
                                 <Table.Td><TextInput size="xs" value={row.max_od} placeholder="optional"
                                     onChange={(e) => setRow(i, { max_od: e.currentTarget.value })} /></Table.Td>
                                 <Table.Td>
-                                    <Group gap={4}>
+                                    {isSolder(row) ? <Badge size="xs" color="gray" variant="light">solder cup - no parts</Badge> : <Group gap={4}>
                                         <Badge size="xs" color={contacts.length ? 'green' : 'red'}>{contacts.length} contact</Badge>
                                         {row.sealing === 'individual' && (
                                             <Badge size="xs" color={seals.length ? 'green' : 'red'}>{seals.length} seal</Badge>)}
                                         <Badge size="xs" color={blanks.length === 1 ? 'green' : 'orange'}>{blanks.length} blank</Badge>
-                                    </Group>
+                                    </Group>}
                                     {(row.problems || []).map((p, j) => <Text key={j} size="xs" c="red">{p}</Text>)}
                                 </Table.Td>
                                 <Table.Td><Button size="xs" color="red" variant="subtle"
@@ -772,6 +785,7 @@ interface AccessoryState {
     part: { pk: number; name: string; ipn: string };
     component_type: string;
     accessory_types: string[];
+    diagram_only_types: string[];       // splice plugs - fitted from the wiring diagram
     missing_templates: string[];
     mode: 'connector' | 'accessory';
     // connector
@@ -892,7 +906,9 @@ function OMGAccessoryPanel({ context }: { context: InvenTreePluginContext }) {
 
     const setRow = (i: number, patch: Partial<EditRow>) =>
         setRows((old) => old.map((r, j) => (j === i ? { ...r, ...patch } : r)));
-    const unused = state.accessory_types.filter((t) => !rows.some((r) => r.kind === t));
+    // splice plugs: fitted where the wiring diagram has one, never required by the connector
+    const unused = state.accessory_types.filter((t) => !rows.some((r) => r.kind === t)
+        && !(state.diagram_only_types || []).includes(t));
 
     return (
         <Stack gap="sm">

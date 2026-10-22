@@ -128,6 +128,20 @@ def _side(data):
     return ''
 
 
+def _mating_side(data):
+    """
+    A splice plug's Side: like every accessory, the side of the connector it
+    fits - a splice plug that is a plug fits a receptacle. "Splice plug" /
+    "jumper plug" in the name doesn't count as saying it's a plug.
+    """
+    text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?)\s+plugs?\b', '', _text(data))
+    if re.search(r'receptacle|\brcpt\b|\brecp\b', text):
+        return 'Plug'
+    if re.search(r'\bplug\b', text):
+        return 'Receptacle'
+    return ''
+
+
 def _max_temperature(data):
     direct = _num(_attr(data, 'temperature_max'))
     if direct:
@@ -175,6 +189,9 @@ def omg_values(data, component_type):
             values['connector.contact_count'] = str(data['contact_count'])
         values['connector.series'] = _series(data)
         values['connector.side'] = _side(data)
+    elif component_type == 'Splice Plug':
+        values['connector.series'] = _series(data)
+        values['connector.side'] = _mating_side(data)
     elif component_type:      # an accessory kind (Lock, Boot, Cover...)
         values['connector.series'] = _series(data)
         values['connector.side'] = _side(data)
