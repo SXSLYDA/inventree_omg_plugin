@@ -1,12 +1,16 @@
 # OMG Harness Import Plugin (InvenTree)
 
-Imports/updates harness BOMs from OMG Harness, reconciles components
-against InvenTree, and integrates Mouser into the native Import Part
-wizard.
+Imports/updates harness BOMs from OMG Harness and reconciles components
+against InvenTree.
 
-Depends on [`mouser-lookup`](https://github.com/SXSLYDA/mouser_shared),
-a separate, framework-agnostic package shared between this plugin and
-OMG Harness itself.
+Depends on [`inventree-mouser`](https://github.com/SXSLYDA/inventree-mouser),
+the **Mouser Integration** plugin: the Import from Supplier wizard, creating
+parts from Mouser (this plugin's pending parts use it), Mouser orders as
+purchase orders, and `mouser_lookup` (shared with OMG Harness itself, replaced
+mouser_shared). It's its own plugin with its own line in `plugins.txt` and its own
+releases; this plugin only asks for a minimum version (`setup.py`). Install it
+first, activate it too and set its keys and Supplier. OMG's part data is added to parts it makes through two hooks
+on this plugin (`mouser_import_parameters`, `mouser_part_created` in `core.py`).
 
 ## Mixins used
 
@@ -16,20 +20,17 @@ OMG Harness itself.
   `/plugin/<slug>/...`.
 - **SettingsMixin** — renders the plugin settings screen in InvenTree's
   own Settings → Plugins UI.
-- **MouserSupplierMixin** (extends `SupplierMixin`) — plugs Mouser into
-  InvenTree's native "Import from Supplier" wizard.
 - **UserInterfaceMixin** — three custom panels (sync review queue,
   harness import, sales order export — see below).
 
 ## Required settings
 
-Set these in Settings → Plugins → OmgHarnessImport once installed:
+Set these in Settings → Plugins → OmgHarnessImport once installed (the Mouser keys are on the Mouser Integration plugin):
 
 | Setting | Purpose |
 |---|---|
 | `OMG_HARNESS_API_TOKEN` | Service-user token for **reading FROM OMG** (harness search, BOM export). Get this from OMG. |
 | `OMG_INBOUND_WEBHOOK_TOKEN` | **Separate** credential OMG checks when this plugin **pushes reconciliation data back**. Copy the exact value from OMG's own InvenTree Setup page's "Inbound Webhook Token" field. **Do not reuse the API Token here** — they authenticate two different directions, and OMG will reject a mismatched value. |
-| `OMG_MOUSER_API_KEY` | Mouser Electronics API key, for the supplier integration. |
 
 ## Building the frontend panels
 
@@ -114,13 +115,20 @@ inventree run invoke update
 Or let `tools/server-update.sh` do it (it adds or moves the line, backs up,
 updates, restarts and checks the installed version) - see below.
 
-`invoke update` installs everything in `plugins.txt` (including
-`mouser-lookup` automatically, since it's declared as this plugin's own
-dependency in `setup.py`), then runs migrations and collects static
-files, all in one step.
+`plugins.txt` needs the Mouser plugin's line too (its `sudo inventree-mouser-update`
+adds it):
 
-After it finishes, go to Settings → Plugins, find OmgHarnessImport, and
-activate it.
+```
+inventree-mouser @ git+https://github.com/SXSLYDA/inventree-mouser.git@v0.1.0
+```
+
+`invoke update` installs everything in `plugins.txt`, then runs migrations and
+collects static files, all in one step. Without the inventree-mouser line pip
+stops with "No matching distribution found for inventree-mouser" (and
+`tools/server-update.sh` refuses to start).
+
+After it finishes, go to Settings → Plugins, find OmgHarnessImport and
+**Mouser Integration**, and activate both.
 
 ## Releasing and deploying
 
@@ -134,7 +142,7 @@ reaches InvenTree on its own.
    (say when a release adds a migration).
 2. Run `.\build-and-bump.ps1` (patch), `-Bump minor`, `-Bump major` or
    `-Version X.Y.Z`. It builds the panels (`-SkipBuild` if none changed), moves
-   setup.py's mouser_shared pin to its newest tag, checks the Python compiles,
+   checks the Python compiles,
    bumps `omg_import_plugin/version.py`, stamps the changelog and installs the
    release-tag git hook. It doesn't commit or push.
 3. Review and commit (PyCharm: Commit). The hook tags that commit `vX.Y.Z` -
@@ -210,11 +218,14 @@ first.
    secret: `INVENTREE_HOST` (IP or domain), `INVENTREE_SSH_USER` (`root`),
    `INVENTREE_SSH_KEY` (the whole private key file).
 
-### mouser_shared
+### inventree-mouser
 
-`mouser-lookup` is pinned in `setup.py` to a mouser_shared release tag the same
-way. Release mouser_shared first (its own `bump-version.ps1`, push the tag);
-the next `build-and-bump.ps1` here moves the pin and notes it in the changelog.
+The Mouser plugin releases and deploys on its own (its own `build-and-bump.ps1`,
+tag, and `sudo inventree-mouser-update`, which moves its line in `plugins.txt`).
+This plugin's `setup.py` only says `inventree-mouser>=X.Y.Z` - a git pin there would
+make pip refuse every other Mouser version. Raise that minimum only when this
+plugin starts using something a newer Mouser release added (e.g. a new hook), and
+deploy that Mouser release first.
 
 ## Known issues and how they were solved
 

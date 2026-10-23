@@ -2,9 +2,11 @@
 InvenTree plugin: OMG Harness Import.
 
 Reconciles OMG Harness component lists and harness BOMs against
-InvenTree's real part database, imports/updates harness BOMs pulled from
-OMG's design tool, and integrates Mouser into InvenTree's own native
-part-creation wizard.
+InvenTree's real part database, and imports/updates harness BOMs pulled from
+OMG's design tool. Everything Mouser (the Import from Supplier wizard,
+creating parts from Mouser, Mouser orders) is the Mouser Integration plugin
+(inventree-mouser, installed with this one); OMG's part data reaches it
+through the two mouser_* hooks below.
 
 Mixins used:
 - AppMixin:            ships this plugin's own DB models (ImportBatch,
@@ -23,25 +25,12 @@ Mixins used:
                         Plugin Settings UI — this is where OMG credentials
                         get set up from the InvenTree side, no separate
                         config file needed.
-- MouserSupplierMixin (extends SupplierMixin): plugs Mouser into
-                        InvenTree's own native "Import Part" wizard
-                        (Parts screen -> Add Parts -> Import from
-                        Supplier) — search, category selection,
-                        parameter matching, and initial stock creation
-                        all come from InvenTree's existing multi-step
-                        flow, not a custom panel. See mouser_supplier.py.
-                        Superseded an earlier UserInterfaceMixin-based
-                        Mouser search/create panel that duplicated this
-                        same capability less completely — that ONE panel
-                        was removed once this native mechanism was
-                        confirmed to exist.
 - EventMixin:           wire gauge auto-fill - saving "Gauge mm2" or "Gauge AWG"
                         on a part fills the other one if blank, from OMG's AWG / mm²
                         table (gauge_autofill.py).
 - ValidationMixin:      refuses a Gauge AWG that isn't a standard size, or a
                         Gauge mm2 that isn't a number (gauge_autofill.py).
-- UserInterfaceMixin:   re-added for a DIFFERENT, smaller panel than the
-                        one removed above — "Sync with OMG" on a
+- UserInterfaceMixin:   "Sync with OMG" on a
                         harness's own part detail page. There's no
                         native InvenTree mechanism for "trigger a custom
                         backend action from a part's page", so this one
@@ -59,24 +48,23 @@ Mixins used:
 Install: pip install -e this plugin, enable it from InvenTree's Plugins
 admin page, run `invoke update` (creates this plugin's tables via syncdb -
 there are no migrations, see models.py), then set
-the OMG_* settings below from InvenTree's Plugin Settings UI — including
-picking which Company record represents Mouser as a supplier (added
-automatically by SupplierMixin as its own "SUPPLIER" setting).
+the OMG_* settings below from InvenTree's Plugin Settings UI. The Mouser keys
+and the Mouser supplier Company are set on the Mouser Integration plugin.
 """
 
 from plugin import InvenTreePlugin
 from plugin.mixins import AppMixin, EventMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin, ValidationMixin
 
-from .mouser_supplier import MouserSupplierMixin
 from .version import OMG_IMPORT_PLUGIN_VERSION
 
 
-class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMixin, EventMixin,
+class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMixin, EventMixin,
                              ValidationMixin, InvenTreePlugin):
     NAME = "OmgHarnessImport"
     SLUG = "omg-harness-import"
     TITLE = "OMG Harness Import"
-    DESCRIPTION = "Imports/updates harness BOMs from OMG Harness, reconciles components against InvenTree, and integrates Mouser into the native Import Part wizard."
+    DESCRIPTION = ("Imports/updates harness BOMs from OMG Harness and reconciles components against InvenTree. "
+                   "Mouser is the Mouser Integration plugin (inventree-mouser), with OMG's part data added.")
     VERSION = OMG_IMPORT_PLUGIN_VERSION
     # InvenTree 1.2+ only (generic common.models parameters; the 1.1 support
     # was removed). InvenTree refuses to load the plugin on anything older.
@@ -112,21 +100,6 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "default": "",
             "protected": True,
         },
-        # --- Mouser ---
-        "OMG_MOUSER_API_KEY": {
-            "name": "Mouser API Key",
-            "description": "Your Mouser Electronics API key. Used when searching Mouser from the "
-                            "Import Part wizard, and when a harness import needs to look up a part "
-                            "that OMG has but InvenTree doesn't have yet.",
-            "default": "",
-            "protected": True,
-        },
-        "OMG_DOWNLOAD_MOUSER_IMAGES": {
-            "name": "Download part images from Mouser",
-            "description": "During Import Part, download the part image from Mouser onto the new part.",
-            "validator": bool,
-            "default": False,
-        },
         "OMG_PENDING_CATEGORY": {
             "name": "Pending parts category",
             "description": "Where the 'Mouser Import - Pending Parts' dashboard item puts parts it creates for OMG, "
@@ -141,6 +114,41 @@ class OmgHarnessImportPlugin(MouserSupplierMixin, AppMixin, UrlsMixin, SettingsM
             "validator": int,
         },
     }
+
+    # --- Mouser Integration plugin hooks (inventree-mouser's hooks.py) ---
+
+    def mouser_import_parameters(self, data):
+        """
+        OMG's parameters for a Mouser listing (Component Type, gauges, colours,
+        contact count, series, side... under OMG's template names -
+        mouser_parameters.py), offered first on the Parameters step of the
+        Import from Supplier wizard. Nothing if OMG can't be reached.
+        """
+        from .mouser_parameters import omg_parameters
+        from .part_setup import omg_part_config
+        from .selection_lists import lists_for_roles
+        config, _error = omg_part_config(self)
+        if not config:
+            return []
+        return omg_parameters(data, config, lists=lists_for_roles(config))
+
+    def mouser_part_created(self, part, data, source):
+        """
+        A part the Mouser plugin just created outside the wizard (its order
+        import, after the purchase order is committed): OMG's parameters set on
+        it, only where the part has none yet. Only for harness parts: one OMG
+        is waiting for (a pending part - its kind gives the Component Type), or
+        one Mouser files under a harness category (mouser_parameters.
+        harness_listing - type guessed from the listing). A fuse or an IC on
+        the same order is left alone. Returns notes for values that couldn't
+        be set.
+        """
+        from .mouser_parameters import harness_listing
+        from .pending_parts import _set_omg_parameters, pending_kind
+        kind = pending_kind(data.get("mpn"), data.get("spn"))
+        if kind is None and not harness_listing(data):
+            return []
+        return _set_omg_parameters(part, data, kind)
 
     # --- EventMixin: wire gauge auto-fill (gauge_autofill.py) ---
     # Needs InvenTree's "Enable event integration" plugin setting and the

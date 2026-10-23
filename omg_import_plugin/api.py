@@ -7,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import HarnessImportJob, ImportBatch, UnresolvedImportItem
+from .mouser_link import mouser_search_key_set
 from .omg_credentials import get_omg_credentials
 from .reconciliation import push_reconciliation_to_omg, push_reconciliation_to_omg_detailed
 from .resolver import import_harness_bom, resolve_item
@@ -582,12 +583,10 @@ class HarnessImportJobView(APIView):
         return Response(_job_payload(job))
 
 
-# Mouser search/create is no longer a custom endpoint here — it lives in
-# InvenTree's own native "Import Part" wizard now (Parts screen -> Add
-# Parts -> Import from Supplier), via mouser_supplier.py's SupplierMixin
-# implementation. That's a more complete mechanism (category selection,
-# parameter matching, pricing, initial stock) than this endpoint pair
-# ever was, so they were removed rather than kept alongside it.
+# Mouser search/create lives in InvenTree's own "Import Part" wizard (Parts ->
+# Add Parts -> Import from Supplier), provided by the Mouser Integration plugin
+# (inventree-mouser). OMG's parameters reach it through this plugin's
+# mouser_import_parameters hook (core.py).
 
 
 class CredentialStatusView(APIView):
@@ -623,7 +622,8 @@ class CredentialStatusView(APIView):
             "omg_harness_api_url": is_set("OMG_HARNESS_API_URL"),
             "omg_inventree_user_token": is_set("OMG_HARNESS_API_TOKEN"),
             "inventree_webhook_token": is_set("OMG_INBOUND_WEBHOOK_TOKEN"),
-            "mouser_api_key": is_set("OMG_MOUSER_API_KEY"),
+            # the Search API key of the Mouser Integration plugin (inventree-mouser)
+            "mouser_api_key": mouser_search_key_set(),
             # The wire gauge fill-in (gauge_autofill.py) only runs when
             # InvenTree's event integration is on AND the background worker
             # is running - otherwise it silently does nothing.

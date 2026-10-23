@@ -47,7 +47,7 @@ Design decisions worth knowing about before you wire this in:
 
    When nothing matches, the flag just says so and points at InvenTree's
    own native "Import Part" wizard (Parts screen -> Add Parts -> Import
-   from Supplier -> Mouser) — see mouser_supplier.py — rather than this
+   from Supplier -> Mouser, the Mouser Integration plugin) — rather than this
    code searching Mouser itself and attaching a suggestion to review.
    That search-and-attach approach was tried and deliberately dropped:
    Mouser lookups belong in the part-creation flow a human is already

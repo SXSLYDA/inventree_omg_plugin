@@ -98,6 +98,14 @@ echo "Newest release:  $NEWEST"
 
 TAG="${TAG:-$NEWEST}"
 printf '%s\n' "$TAGS" | grep -qx "$TAG" || die "$TAG isn't a release tag in $REPO. Releases: $(printf '%s ' $TAGS)"
+
+# The OMG plugin needs the Mouser Integration plugin (inventree-mouser), which has its own
+# pinned line in plugins.txt (added and moved by its own update script) - pip can't find it otherwise.
+if ! grep -qE "^[[:space:]]*inventree-mouser[[:space:]]*@" "$PLUGINS_FILE"; then
+    die "plugins.txt has no inventree-mouser line. Install the Mouser plugin first:
+       sudo inventree-mouser-update        (see github.com/SXSLYDA/inventree-mouser, tools/server-update.sh)
+       then run this again."
+fi
 TARGET="${TAG#v}"
 
 if [ -n "$INSTALLED" ]; then

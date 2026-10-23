@@ -8,7 +8,7 @@ setuptools.setup(
     author="Tyler / OMG Harness",
     description="InvenTree plugin: reconciles OMG Harness component lists against InvenTree parts, "
                 "imports/updates harness BOMs, syncs harness parts with OMG on demand, exports a Sales "
-                "Order's parts list to XLSX, and integrates Mouser into InvenTree's native Import Part wizard.",
+                "Order's parts list to XLSX, and adds OMG's part data to parts made by the Mouser Integration plugin.",
     packages=setuptools.find_packages(exclude=[
         "sync_panel_source", "sync_panel_source.*",
         "so_export_panel_source", "so_export_panel_source.*",
@@ -26,18 +26,15 @@ setuptools.setup(
     install_requires=[
         "requests",
         "openpyxl",  # sales_order_export.py's XLSX generation
-        # mouser_supplier.py and resolve_pending.py both import this
-        # directly — it's a real dependency, not optional. This is our
-        # own package too (see mouser_shared, its own separate repo),
-        # never published to PyPI, so it needs a direct URL reference
-        # (PEP 508) rather than a plain name — pip resolves this from
-        # git during install, no separate manual step needed.
-        # Pinned to a release TAG, not the bare repo URL: with the bare URL,
-        # pip treats mouser-lookup as "already installed from that URL" and
-        # never updates it. A new tag = a new URL = pip reinstalls. When
-        # mouser_shared releases (its bump-version.ps1 prints the tag),
-        # update the @vX.Y.Z here and bump this plugin's version.
-        "mouser-lookup @ git+https://github.com/SXSLYDA/mouser_shared.git@v0.1.1",
+        # The Mouser Integration plugin (its own repo, inventree-mouser): the
+        # Import from Supplier wizard, creating parts from Mouser (pending
+        # parts use it) and Mouser orders. A MINIMUM version by name, not a
+        # git pin: plugins.txt has its own pinned line
+        #   inventree-mouser @ git+https://github.com/SXSLYDA/inventree-mouser.git@vX.Y.Z
+        # (its server-update script adds and moves it), so each plugin updates
+        # on its own. A pin here would make pip refuse any other Mouser version.
+        # Raise this only when this plugin needs something newer from it.
+        "inventree-mouser>=0.1.0",
     ],
     entry_points={
         # This is the entry point group InvenTree scans for installed plugins.

@@ -6,7 +6,7 @@ InvenTree needed. From the plugin repo root:
 """
 import unittest
 
-from .mouser_parameters import guess_component_type, omg_parameters, omg_values
+from .mouser_parameters import guess_component_type, harness_listing, omg_parameters, omg_values
 
 CONFIG = {
     'roles': {r: {'template': t} for r, t in {
@@ -101,3 +101,21 @@ class SnapTests(unittest.TestCase):
         self.assertEqual(snap('Deutsch DT', ['DT'], exact=True), ('Deutsch DT', ['Deutsch DT']))
         self.assertEqual(snap('dt, dtm', ['DT', 'DTM'], per_item=True, exact=True), ('DT, DTM', []))
         self.assertEqual(snap('anything', [], exact=True), ('anything', []))
+
+
+class HarnessListingTests(unittest.TestCase):
+    """Which Mouser order parts get OMG parameters (core.mouser_part_created)."""
+
+    def test_harness_categories(self):
+        for category in ('Automotive Connectors', 'Heavy Duty Power Connectors', 'Terminals', 'Hook-up Wire',
+                         'Multi-Conductor Cables', 'Connector Accessories', 'Circular MIL Spec Contacts',
+                         'D-Sub Standard Connectors'):
+            self.assertTrue(harness_listing({'category': category}), category)
+
+    def test_everything_else(self):
+        for category in ('Resettable Fuses - PPTC', 'Fixed Terminal Blocks', 'Wirewound Resistors - Through Hole',
+                         'Board to Board & Mezzanine Connectors', 'Crimpers / Crimping Tools', 'RF Connectors / Coaxial Connectors',
+                         'USB Connectors', 'Modular Connectors / Ethernet Connectors', ''):
+            self.assertFalse(harness_listing({'category': category}), category)
+        self.assertFalse(harness_listing({}))
+

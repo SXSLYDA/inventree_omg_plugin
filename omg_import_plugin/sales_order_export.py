@@ -18,7 +18,7 @@ canonical identifier — exact-IPN matching everywhere, harness auto-
 create setting name=IPN=the OMG part number — but if IPN is never
 populated on real, pre-existing parts, none of that matching logic
 would ever have found a match against them. Refactored throughout
-(this file, resolver.py, harness_import.py, mouser_supplier.py,
+(this file, resolver.py, harness_import.py, the Mouser import code,
 components_app/inventree_lookup.py) to check `name` first, with `IPN`
 still checked too since it's harmless and stays forward-compatible if
 IPN is ever populated for some part later.

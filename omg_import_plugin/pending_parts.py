@@ -10,9 +10,9 @@ them yet. OMG keeps them as pending parts until they exist here.
   POST /plugin/omg-harness-import/pending-parts/  {"ids": [pending part ids]}
        Imports them: an exact match (name / IPN / MPN / SKU) is linked as it
        is; otherwise the part is created from Mouser - with its manufacturer
-       part, Mouser supplier part and price breaks, through the same Mouser
-       supplier methods InvenTree's Import from Supplier wizard uses (not
-       changed here) - plus OMG's parameters. Several matches = left for a
+       part, Mouser supplier part and price breaks, by the Mouser Integration
+       plugin (inventree-mouser - the methods its Import from Supplier wizard
+       uses) - plus OMG's parameters. Several matches = left for a
        person to choose (reported, nothing created).
 
 New parts go into the PENDING category (plugin setting "Pending parts
@@ -29,6 +29,8 @@ from types import SimpleNamespace
 
 from django.db import transaction
 from django.db.models import Q
+
+from .mouser_link import mouser_plugin, mouser_search_key_set, require_mouser_plugin
 
 logger = logging.getLogger("inventree")
 
@@ -112,18 +114,36 @@ def pending_state(plugin):
         "items": items,
         "category": {"pk": category.pk, "name": category.pathstring} if category else None,
         "in_category": in_category,
-        "mouser_key_set": bool(plugin.get_setting("OMG_MOUSER_API_KEY")),
+        "mouser_key_set": mouser_search_key_set(),
     }
 
 
 # ==================== Importing ====================
 
+def pending_kind(mpn, spn=""):
+    """
+    The kind OMG gave this part if OMG is waiting for it (one of its pending
+    parts: same MPN or Mouser part number) - "" when pending with no kind -
+    else None (not pending, or OMG can't be reached).
+    """
+    rows, _error = _omg_pending()
+    keys = {k.strip().lower() for k in (mpn, spn) if k and k.strip()}
+    for row in rows or []:
+        stored = row.get("mouser_data") or {}
+        if keys & {str(v).strip().lower() for v in (row.get("mpn"), stored.get("spn")) if v}:
+            return row.get("kind") or ""
+    return None
+
+
 def _set_omg_parameters(part, mouser_data, kind):
     """
     OMG's parameters on a part just created from Mouser (mouser_parameters.py) -
-    the kind OMG sent gives the Component Type. Returns ["Template: reason"]
-    for values InvenTree refused (or a note if OMG couldn't be reached).
+    the kind OMG sent gives the Component Type. Only parameters the part
+    doesn't have yet are set: a value already on the part (typed by a person,
+    or there before) is never overwritten. Returns ["Template: reason"] for
+    values InvenTree refused (or a note if OMG couldn't be reached).
     """
+    from .inventree_native_lookup import get_part_parameter_str
     from .mouser_parameters import KIND_TYPES, omg_parameters
     from .part_setup import _plugin, _set_parameter, _template, omg_part_config
     from .selection_lists import lists_for_roles
@@ -140,6 +160,8 @@ def _set_omg_parameters(part, mouser_data, kind):
         if template is None:
             skipped.append(f"{template_name}: no such template in InvenTree")
             continue
+        if get_part_parameter_str(part, template.name):
+            continue        # already set - left as it is
         try:
             _set_parameter(part, template, value)
         except Exception as exc:      # InvenTree's own checks (units, choices) refused it
@@ -147,23 +169,27 @@ def _set_omg_parameters(part, mouser_data, kind):
     return skipped
 
 
-def _mouser_data(plugin, row):
+def _mouser_data(row):
     """Today's Mouser listing for a pending part (fresh prices), else what OMG stored when it was picked."""
     stored = row.get("mouser_data") or {}
-    if plugin.get_setting("OMG_MOUSER_API_KEY"):
+    if mouser_search_key_set():
         try:
-            return plugin.get_import_data("mouser", stored.get("spn") or row["mpn"])
+            return mouser_plugin().get_import_data("mouser", stored.get("spn") or row["mpn"])
         except Exception:
             logger.info("Mouser lookup for pending part %s failed - using OMG's stored data", row.get("id"))
     return {**stored, "mpn": stored.get("mpn") or row["mpn"]}
 
 
-def _create_from_mouser(plugin, data, category, user):
-    """The part, its manufacturer part and Mouser supplier part - the wizard's own steps, in order."""
+def _create_from_mouser(data, category, user):
+    """
+    The part, its manufacturer part and Mouser supplier part - the wizard's own
+    steps, in order, done by the Mouser Integration plugin (inventree-mouser).
+    """
+    mouser = require_mouser_plugin()
     with transaction.atomic():
-        part = plugin.import_part(data, category=category, creation_user=user)
-        manufacturer_part = plugin.import_manufacturer_part(data, part=part)
-        plugin.import_supplier_part(data, part=part, manufacturer_part=manufacturer_part)
+        part = mouser.import_part(data, category=category, creation_user=user)
+        manufacturer_part = mouser.import_manufacturer_part(data, part=part)
+        mouser.import_supplier_part(data, part=part, manufacturer_part=manufacturer_part)
     return part
 
 
@@ -197,8 +223,8 @@ def import_pending(plugin, ids, user):
                 part = matches[0]
                 result.update(status="linked", part=_part_row(part), message="Already in InvenTree - linked.")
             else:
-                data = _mouser_data(plugin, row)
-                part = _create_from_mouser(plugin, data, category, user)
+                data = _mouser_data(row)
+                part = _create_from_mouser(data, category, user)
                 skipped = _set_omg_parameters(part, data, row.get("kind"))
                 result.update(status="created", part=_part_row(part),
                               message=("Some parameters weren't set: " + "; ".join(skipped)

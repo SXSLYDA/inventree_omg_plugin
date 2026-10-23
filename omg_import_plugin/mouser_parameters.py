@@ -6,9 +6,12 @@ and so on already filled in, under the InvenTree template names OMG uses
 /api/parts/part-profiles/).
 
 Used by:
-  - mouser_supplier.get_parameters(): InvenTree's "Import from Supplier"
-    wizard. The values appear on its Parameters step, ticked, for a person
-    to check, edit or untick before anything is saved.
+  - core.mouser_import_parameters(): the Mouser Integration plugin's
+    "Import from Supplier" wizard asks for these (its hook). The values
+    appear on its Parameters step, ticked, for a person to check, edit or
+    untick before anything is saved.
+  - core.mouser_part_created(): parts the Mouser plugin's order import
+    creates get them set straight away (pending_parts._set_omg_parameters).
   - pending_parts.import_pending(): parts OMG picked from Mouser, created
     from the "Mouser Import - Pending Parts" dashboard item - the kind OMG
     sends (connector, wire...) gives the Component Type.
@@ -82,6 +85,23 @@ def _attr(data, key):
 def _num(text):
     m = _NUMBER.search(str(text or ''))
     return f"{float(m.group(0).replace(',', '.')):g}" if m else ''
+
+
+# Mouser product categories of the parts OMG's harnesses use - connectors,
+# their contacts / seals / accessories, terminals, wire and cable. Anything
+# else from a Mouser order (fuses, ICs, tools, terminal blocks...) gets no
+# OMG parameters: guessing a type from its description would be wrong too
+# often ("wirewound resistor" is not a Wire).
+HARNESS_CATEGORIES = re.compile(r'connector|contacts?\b|terminals\b|\bwire\b|hook.?up|cable|backshell|'
+                                r'boots?\b|grommet|\bseals?\b', re.I)
+NOT_HARNESS_CATEGORIES = re.compile(r'terminal block|pcb|board|ic socket|test|tool|fiber|optic|rf |coax|'
+                                    r'usb|ethernet|modular|\bfuse', re.I)
+
+
+def harness_listing(data):
+    """True when Mouser files this listing under a harness-part category (see HARNESS_CATEGORIES)."""
+    category = str((data or {}).get('category') or '')
+    return bool(HARNESS_CATEGORIES.search(category)) and not NOT_HARNESS_CATEGORIES.search(category)
 
 
 def guess_component_type(data):

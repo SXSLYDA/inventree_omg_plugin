@@ -23,13 +23,12 @@
 #      the new tag doesn't already exist here or on GitHub.
 #   2. Builds all five panels and merges their Vite manifests (see the note at
 #      $mergedManifest for why).
-#   3. Moves setup.py's mouser-lookup pin to mouser_shared's newest release tag.
-#   4. Checks every .py file compiles (needs Python 3 on PATH or your venv active).
-#   5. Bumps omg_import_plugin/version.py (setup.py reads it from there) and turns
+#   3. Checks every .py file compiles (needs Python 3 on PATH or your venv active).
+#   4. Bumps omg_import_plugin/version.py (setup.py reads it from there) and turns
 #      "## Unreleased" in CHANGELOG.md into "## X.Y.Z - date".
-#   6. Installs the release-tag git hook (tools/git-hooks/post-commit): when you
+#   5. Installs the release-tag git hook (tools/git-hooks/post-commit): when you
 #      commit a version.py change, that commit is tagged vX.Y.Z automatically.
-#   7. Shows what changed and what to do next.
+#   6. Shows what changed and what to do next.
 # It does NOT commit or push - review the changes in PyCharm first, commit
 # (the hook tags it), then push the commit AND the tag.
 #
@@ -55,7 +54,6 @@ param(
 # their stderr chatter into exceptions in Windows PowerShell 5.1.
 $ErrorActionPreference = 'Continue'
 $repoUrl = 'https://github.com/SXSLYDA/inventree_omg_plugin.git'
-$mouserRepo = 'https://github.com/SXSLYDA/mouser_shared.git'
 $utf8 = New-Object System.Text.UTF8Encoding $false
 $emDash = [string][char]0x2014
 
@@ -252,46 +250,7 @@ if ($SkipBuild) {
     Write-Host "Merged manifest.json covers $($mergedManifest.Count) panel(s): $($mergedManifest.Keys -join ', ')"
 }
 
-# ------------------------------------------------------------------ 3. mouser_shared pin
-# setup.py pins mouser-lookup to mouser_shared's NEWEST release tag - the pin
-# (...mouser_shared.git@vX.Y.Z) is what makes pip reinstall it. Never downgrades;
-# if GitHub can't be reached it warns and leaves the pin alone.
-Step "Checking mouser_shared for a newer release"
-$mouserPinChange = $null
-$remoteRefs = git ls-remote --tags --refs $mouserRepo 2>$null
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "Couldn't list mouser_shared's tags (offline, or no access) - setup.py's mouser-lookup pin left as is."
-} else {
-    $releases = @()
-    foreach ($line in $remoteRefs) {
-        if ($line -match 'refs/tags/v(\d+)\.(\d+)\.(\d+)$') {
-            $releases += [pscustomobject]@{
-                Tag     = "v$($matches[1]).$($matches[2]).$($matches[3])"
-                Version = [version]"$($matches[1]).$($matches[2]).$($matches[3])"
-            }
-        }
-    }
-    $setupContent = Read-Text $setupPath
-    $pinRegex = [regex]'(mouser-lookup\s*@\s*git\+https://github\.com/SXSLYDA/mouser_shared\.git)(@v(\d+\.\d+\.\d+))?'
-    $pinMatch = $pinRegex.Match($setupContent)
-    if ($releases.Count -eq 0) {
-        Write-Warning "No vX.Y.Z tags found on mouser_shared - pin left as is."
-    } elseif (-not $pinMatch.Success) {
-        Write-Warning "No mouser-lookup @ ...mouser_shared.git line found in setup.py - pin not checked."
-    } else {
-        $latest = ($releases | Sort-Object Version -Descending)[0]
-        if ($pinMatch.Groups[3].Success -and ([version]$pinMatch.Groups[3].Value -ge $latest.Version)) {
-            Write-Host "mouser-lookup is already pinned to the newest release ($($pinMatch.Groups[2].Value.TrimStart('@')))."
-        } else {
-            $currentPin = if ($pinMatch.Groups[2].Success) { $pinMatch.Groups[2].Value.TrimStart('@') } else { "(unpinned)" }
-            Write-Text $setupPath ($pinRegex.Replace($setupContent, "`${1}@$($latest.Tag)", 1))
-            $mouserPinChange = "$currentPin -> $($latest.Tag)"
-            Write-Host "mouser-lookup pin updated in setup.py: $mouserPinChange" -ForegroundColor Green
-        }
-    }
-}
-
-# ------------------------------------------------------------------ 4. checks
+# ------------------------------------------------------------------ 3. checks
 Step "Checking the Python code"
 $python = Find-Python
 if (-not $python) {
@@ -302,7 +261,7 @@ if (-not $python) {
     Write-Host "All Python files compile." -ForegroundColor Green
 }
 
-# ------------------------------------------------------------------ 5. bump
+# ------------------------------------------------------------------ 4. bump
 Step "Bumping"
 if ($alreadyBumped) {
     Write-Host "version.py and CHANGELOG.md already say $newVersion - left as they are."
@@ -317,9 +276,6 @@ $bodyStart = $heading.Index + $heading.Length
 $next = [regex]::Match($changelog.Substring($bodyStart), '(?m)^## ')
 $bodyEnd = if ($next.Success) { $bodyStart + $next.Index } else { $changelog.Length }
 $body = $changelog.Substring($bodyStart, $bodyEnd - $bodyStart).Trim()
-if ($mouserPinChange) {
-    $body = ($body + "$nl- mouser-lookup (mouser_shared) $mouserPinChange.").Trim()
-}
 if (-not $body) {
     Write-Host "There's nothing under '## Unreleased' in CHANGELOG.md." -ForegroundColor Yellow
     if (-not $Yes) {
@@ -337,7 +293,7 @@ Write-Text $versionPath $versionText
 Write-Host "Version bumped: $oldVersion -> $newVersion; CHANGELOG.md stamped '$newVersion $emDash $date'."
 }
 
-# ------------------------------------------------------------------ 6. release-tag hook
+# ------------------------------------------------------------------ 5. release-tag hook
 # .git/hooks isn't part of the repo, so it's (re)installed on every run: the
 # commit that changes version.py gets tagged vX.Y.Z (tools/git-hooks/post-commit).
 Step "Release-tag git hook"
@@ -360,7 +316,7 @@ if (-not (Test-Path $hookSource) -or -not $hooksDir) {
     }
 }
 
-# ------------------------------------------------------------------ 7. what changed
+# ------------------------------------------------------------------ 6. what changed
 Step "Ready to commit"
 # Each build makes NEW hashed panel files (PartSetupPanel-<hash>.js) and removes
 # the old ones. New files aren't tracked yet, so PyCharm's commit window leaves
