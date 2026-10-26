@@ -45,6 +45,8 @@ TYPE_RULES = (
     # a plug whose pins are bussed together (bought or built, its own part) - before the
     # way-count connector rule: "Plug, DT, 12 way, bussed" is a splice plug
     ('Splice Plug', (r'splice plug', r'jumper plug', r'\bbuss(?:ed)?\b(?! ?bar)')),
+    # a diode plug (moulded, plugs into a connector) or an inline diode - not a connector
+    ('Diode', (r'\bdiodes?\b',)),
     ('', (r'connector seal,', r'^seal, front', r'panel nut', r'lockwasher', r'jam nut')),
     ('Secondary Lock', (r'secondary lock', r'\btpa\b')),
     ('Lock', (r'wedge ?lock', r'^lock\b', r'\block,')),
@@ -284,7 +286,7 @@ def _proposals(part, config, lists, current):
     text = data['description'].lower()
     accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Terminal', 'Contact', 'Seal', 'Blank')
     if accessory:
-        if 'plug' in text and 'receptacle' in text and ctype != 'Splice Plug':
+        if 'plug' in text and 'receptacle' in text and ctype not in ('Splice Plug', 'Diode'):
             values['connector.side'] = 'Both'      # "for plug or recept."
         if data.get('contact_count'):
             values['accessory.ways'] = str(data['contact_count'])

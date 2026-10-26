@@ -314,6 +314,22 @@ def _part_info(part, config):
     return info
 
 
+def _all_blanks(config):
+    """
+    [part info] - every active part whose Component Type is Blank, any series:
+    what a Cavity Map range can choose as its blank ("blank 114017") when a
+    blank made for another series fits.
+    """
+    from common.models import Parameter
+    from part.models import Part
+    name = _role_template(config, "part.component_type")
+    if not name:
+        return []
+    pks = Parameter.objects.filter(template__name__iexact=name, model_type=_part_content_type(),
+                                   data__iexact="Blank").values_list("model_id", flat=True)
+    return [_part_info(p, config) for p in Part.objects.filter(pk__in=list(pks), active=True).order_by("name")]
+
+
 def _parts_of_series(config, series_list):
     """
     ({series key: [part info]}, {series as written: key}, error) - every
@@ -357,7 +373,8 @@ def cavity_state(part, config, extra_series=None):
         return None, error
     rows = answers.get("cavity_map") or []
     related = [_part_info(p, config) for p in _related_parts(part)]
-    series = [r["series"] for r in rows if r.get("series")] + list(extra_series or [])
+    # every series a range names (a range may take several - OMG lists them)
+    series = [s for r in rows for s in (r.get("series_list") or [])] + list(extra_series or [])
     by_series, series_keys, error = _parts_of_series(config, series)
     if error:
         return None, error
@@ -374,8 +391,10 @@ def cavity_state(part, config, extra_series=None):
         "map_template": map_name,
         "map_template_exists": bool(map_name and _template(map_name)),
         "raw": raw,
-        "rows": [{k: r.get(k) for k in ("cavities", "series", "solder", "sealing", "max_od", "problems")}
+        "rows": [{k: r.get(k) for k in ("cavities", "series", "solder", "sealing", "max_od", "blank", "problems")}
                  for r in rows],
+        # every Blank, any series - a range can choose one that fits though made for another series
+        "all_blanks": _all_blanks(config),
         "related": related,
         "by_series": by_series,
         "series_keys": {k: v for k, v in series_keys.items() if k in set(series)},
@@ -410,10 +429,11 @@ def _snap_series(config, rows, solder=()):
     for i, row in enumerate(rows, start=1):
         series = str(row.get("series") or "").strip()
         if series and series not in solder:
-            snapped, unknown = snap(series, choices, exact=True)
+            # several series ("HDP-16, HDP-20") are matched to the list one by one
+            snapped, unknown = snap(series, choices, exact=True, per_item=True)
             if unknown:
-                hint = suggest(series, choices)
-                errors.append(f"Row {i}: '{series}' isn't in the Contact Series list"
+                hint = suggest(unknown[0], choices)
+                errors.append(f"Row {i}: '{', '.join(unknown)}' isn't in the Contact Series list"
                               + (f" - did you mean '{hint}'?" if hint else "")
                               + " (add it on OMG's InvenTree Settings page, Selection Lists).")
             row = {**row, "series": snapped}
@@ -440,6 +460,23 @@ def save_cavities(part, config, rows, related_add, related_remove):
     text, errors = answers["formatted"]["text"], answers["formatted"]["errors"]
     if errors:
         return errors
+    # A range's chosen blank must be a Blank part; it becomes a related part (OMG
+    # only uses the connector's related parts)
+    chosen = [(i, str(r.get("blank") or "").strip()) for i, r in enumerate(rows, start=1) if str(r.get("blank") or "").strip()]
+    if chosen:
+        blanks = _all_blanks(config)
+        related_add = list(dict.fromkeys(int(pk) for pk in related_add or []))
+        for i, wanted in chosen:
+            match = [b for b in blanks if wanted.upper() in {(b["name"] or "").upper(), (b["ipn"] or "").upper()} - {""}]
+            if len(match) != 1:
+                errors.append(f"Row {i}: " + (f"more than one Blank part is '{wanted}' - choose by IPN" if match
+                                              else f"no part with Component Type Blank is '{wanted}'"))
+            elif match[0]["pk"] not in related_add:
+                related_add.append(match[0]["pk"])
+        if errors:
+            return errors
+        keep = {pk for pk in related_add}
+        related_remove = [pk for pk in related_remove or [] if int(pk) not in keep]
     template = _template(_role_template(config, "connector.cavity_map"))
     if template is None:
         return [f"No '{_role_template(config, 'connector.cavity_map')}' parameter template in InvenTree - create "

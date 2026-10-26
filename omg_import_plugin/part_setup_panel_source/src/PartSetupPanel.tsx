@@ -513,6 +513,7 @@ interface CavityRow {
     series: string;
     sealing: string;
     max_od: string;
+    blank: string;          // a chosen blank (part name), any series - '' = the series' own blank
     problems?: string[];
 }
 
@@ -523,7 +524,9 @@ interface CavityState {
     map_template: string;
     map_template_exists: boolean;
     raw: string;
-    rows: { cavities: string; series: string; solder: boolean; sealing: string; max_od: number | null; problems: string[] }[];
+    rows: { cavities: string; series: string; solder: boolean; sealing: string; max_od: number | null; blank: string;
+        problems: string[] }[];
+    all_blanks: PartInfo[];                 // every Blank part, any series (a range's chosen blank)
     related: PartInfo[];
     by_series: Record<string, PartInfo[]>;
     series_keys: Record<string, string>;    // series as written -> OMG's comparison key
@@ -535,6 +538,9 @@ interface CavityState {
 }
 
 const TYPES = ['Contact', 'Seal', 'Blank'];
+
+// A range may take contacts of several series ("HDP-16, HDP-20") - kept as that text in the row
+const splitSeries = (value: string) => [...new Set((value || '').split(/[,|+]/).map((s) => s.trim()).filter(Boolean))];
 
 function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const partId = context.id;
@@ -553,7 +559,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const apply = useCallback((data: CavityState) => {
         setState(data);
         setRows((data.rows || []).map((r) => ({ cavities: r.cavities, series: r.series, sealing: r.sealing,
-            max_od: r.max_od == null ? '' : String(r.max_od), problems: r.problems })));
+            max_od: r.max_od == null ? '' : String(r.max_od), blank: r.blank || '', problems: r.problems })));
         setRelated(new Set((data.related || []).map((p) => p.pk)));
         setBySeries(data.by_series || {});
         setSeriesKeys(data.series_keys || {});
@@ -577,8 +583,8 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     // Parts for series typed in the grid but not looked up yet
     const lookUp = useCallback(async () => {
         const solderName = (state?.solder_series || '').toLowerCase();
-        const series = [...new Set(rows.map((r) => r.series.trim())
-            .filter((v) => v && v.toLowerCase() !== solderName))];
+        const series = [...new Set(rows.flatMap((r) => splitSeries(r.series))
+            .filter((v) => v.toLowerCase() !== solderName))];
         if (!series.length) return;
         try {
             const response = await context.api.get(`${PLUGIN}/cavity-setup/${partId}/`,
@@ -600,7 +606,8 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const preview = useMemo(() => rows
         .filter((r) => r.cavities.trim() && r.series.trim())
         .map((r) => [r.cavities.trim(), [r.series.trim(), r.sealing || 'none',
-            ...(r.max_od.trim() ? [`maxod ${r.max_od.trim()}`] : [])].join(' / ')].join(': '))
+            ...(r.max_od.trim() ? [`maxod ${r.max_od.trim()}`] : []),
+            ...(r.blank ? [`blank ${r.blank}`] : [])].join(' / ')].join(': '))
         .join('; '), [rows]);
 
     const setRow = (i: number, patch: Partial<CavityRow>) =>
@@ -620,7 +627,8 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
         const related_remove = [...before].filter((pk) => !related.has(pk));
         try {
             const response = await context.api.post(`${PLUGIN}/cavity-setup/${partId}/`, {
-                rows: rows.map((r) => ({ cavities: r.cavities, series: r.series, sealing: r.sealing, max_od: r.max_od })),
+                rows: rows.map((r) => ({ cavities: r.cavities, series: r.series, sealing: r.sealing, max_od: r.max_od,
+                    blank: r.blank })),
                 related_add, related_remove,
             }, LONG);
             apply(response.data);
@@ -640,10 +648,25 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
     const solder = state.solder_series || '';
     const isSolder = (row: CavityRow) => !!solder && row.series.trim().toLowerCase() === solder.toLowerCase();
     const seriesChoices = [...(state.series_choices || []), ...(solder ? [solder] : [])];
-    const seriesList = [...new Set(rows.filter((r) => !isSolder(r)).map((r) => r.series.trim()).filter(Boolean))];
-    const relatedOfSeries = (series: string, type: string) => Object.values(relatedParts).filter((p) =>
-        related.has(p.pk) && (p.series_key || `raw:${p.series}`) === keyOf(series)
-        && (p.component_type || '').toLowerCase() === type.toLowerCase());
+    // A range's blank: any Blank part (its series shown), plus one already in the map but no longer a Blank
+    const blankChoices = (current: string) => {
+        const choices = (state.all_blanks || []).map((b) => ({
+            value: b.name, label: `${b.name}${b.series ? ` (${b.series})` : ''}${b.ipn && b.ipn !== b.name ? ` · ${b.ipn}` : ''}`,
+        }));
+        if (current && !choices.some((c) => c.value.toUpperCase() === current.toUpperCase()
+            || (state.all_blanks || []).some((b) => (b.ipn || '').toUpperCase() === current.toUpperCase()))) {
+            choices.unshift({ value: current, label: `${current} (not a Blank part)` });
+        }
+        return choices;
+    };
+    const seriesList = [...new Set(rows.filter((r) => !isSolder(r)).flatMap((r) => splitSeries(r.series)))];
+    // related parts of any of these series (a range may take several)
+    const relatedOfSeries = (seriesNames: string[], type: string) => {
+        const keys = new Set(seriesNames.map((s) => keyOf(s)));
+        return Object.values(relatedParts).filter((p) =>
+            related.has(p.pk) && keys.has(p.series_key || `raw:${p.series}`)
+            && (p.component_type || '').toLowerCase() === type.toLowerCase());
+    };
 
     return (
         <Stack gap="sm">
@@ -653,7 +676,10 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                 with the contact series it takes, how it's sealed, and the largest wire insulation OD it
                 accepts. This is the one list of cavities: OMG's pinout (empty cavities), blanks and
                 Contact Count all come from it. OMG picks each wire end's contact, seal and every unused
-                cavity's blank from the related parts of that series. Solder-cup cavities: pick the
+                cavity's blank from the related parts of that series. Cavities that take more than one contact
+                size (e.g. HDP size 16 and 20): pick both series - the wire's size picks the contact, the first
+                series wins a tie and gives the empty cavities' blank. Blank: leave on the series' blank, or choose
+                any Blank (any series) that fits. Solder-cup cavities: pick the
                 series "{state.solder_series}" - the wire is soldered to the connector's own pin, so no
                 contact, seal or blank (set Strip Length and Min / Max Gauge on this connector in OMG Part
                 Setup for the cups).
@@ -666,41 +692,60 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
                 <Table.Thead>
                     <Table.Tr>
                         <Table.Th>Cavities</Table.Th><Table.Th>Series</Table.Th>
-                        <Table.Th>Sealing</Table.Th><Table.Th>Max OD (mm)</Table.Th><Table.Th>Parts</Table.Th><Table.Th />
+                        <Table.Th>Sealing</Table.Th><Table.Th>Max OD (mm)</Table.Th><Table.Th>Blank</Table.Th>
+                        <Table.Th>Parts</Table.Th><Table.Th />
                     </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
                     {rows.map((row, i) => {
-                        const contacts = relatedOfSeries(row.series, 'Contact');
-                        const seals = relatedOfSeries(row.series, 'Seal');
-                        const blanks = relatedOfSeries(row.series, 'Blank');
+                        const listed = splitSeries(row.series);
+                        const contacts = relatedOfSeries(listed, 'Contact');
+                        const seals = relatedOfSeries(listed, 'Seal');
+                        const blanks = relatedOfSeries(listed.slice(0, 1), 'Blank');   // empty cavities: first series'
+                        const missingContact = listed.filter((s) => !relatedOfSeries([s], 'Contact').length);
+                        const unknown = listed.filter((s) => !seriesChoices.includes(s));
                         return (
                             <Table.Tr key={i}>
                                 <Table.Td><TextInput size="xs" value={row.cavities} placeholder="1-12, or A, B, C, E"
                                     onChange={(e) => setRow(i, { cavities: e.currentTarget.value })} /></Table.Td>
                                 <Table.Td>{(state.series_choices || []).length
                                     // From the Contact Series list, so it always matches the contacts' own spelling
-                                    ? <Select size="xs" searchable placeholder="Contact series"
-                                        data={row.series && !seriesChoices.includes(row.series)
-                                            ? [row.series, ...seriesChoices] : seriesChoices}
-                                        value={row.series || null}
-                                        onChange={(v) => setRow(i, { series: v || '',
-                                            ...(v === solder && row.sealing === 'individual' ? { sealing: 'none' } : {}) })}
-                                        error={row.series && !seriesChoices.includes(row.series)
-                                            ? 'Not in the Contact Series list' : undefined} />
-                                    : <TextInput size="xs" value={row.series} placeholder="e.g. DT-16"
+                                    // Several when the cavities take more than one contact size (e.g. HDP-16 and
+                                    // HDP-20): the wire's size picks, the first one wins a tie and gives the blank.
+                                    ? <MultiSelect size="xs" searchable placeholder={listed.length ? undefined : 'Contact series'}
+                                        data={[...unknown, ...seriesChoices]} value={listed}
+                                        onChange={(values) => {
+                                            // Solder cups can't share a range with contact series
+                                            const picked = values.includes(solder) && !listed.includes(solder) ? [solder]
+                                                : values.filter((v) => v !== solder || values.length === 1);
+                                            setRow(i, { series: picked.join(', '),
+                                                ...(picked.includes(solder) && row.sealing === 'individual' ? { sealing: 'none' } : {}),
+                                                ...(picked.includes(solder) ? { blank: '' } : {}) });
+                                        }}
+                                        error={unknown.length ? `Not in the Contact Series list: ${unknown.join(', ')}` : undefined} />
+                                    : <TextInput size="xs" value={row.series} placeholder="e.g. DT-16, or HDP-16, HDP-20"
                                         onChange={(e) => setRow(i, { series: e.currentTarget.value })} />}</Table.Td>
                                 <Table.Td><Select size="xs" value={row.sealing || 'none'}
                                     data={isSolder(row) ? state.sealings.filter((v) => v !== 'individual') : state.sealings}
                                     onChange={(v) => setRow(i, { sealing: v ?? 'none' })} allowDeselect={false} /></Table.Td>
                                 <Table.Td><TextInput size="xs" value={row.max_od} placeholder="optional"
                                     onChange={(e) => setRow(i, { max_od: e.currentTarget.value })} /></Table.Td>
+                                <Table.Td>{isSolder(row) ? <Text size="xs" c="dimmed">-</Text>
+                                    // Any Blank part, whatever its series - for one that fits these cavities
+                                    // though it was made for another series. Saved as a related part.
+                                    : <Select size="xs" searchable clearable placeholder="Series blank"
+                                        data={blankChoices(row.blank)} value={row.blank || null}
+                                        onChange={(v) => setRow(i, { blank: v || '' })} />}</Table.Td>
                                 <Table.Td>
                                     {isSolder(row) ? <Badge size="xs" color="gray" variant="light">solder cup - no parts</Badge> : <Group gap={4}>
-                                        <Badge size="xs" color={contacts.length ? 'green' : 'red'}>{contacts.length} contact</Badge>
+                                        <Badge size="xs" color={contacts.length && !missingContact.length ? 'green' : 'red'}
+                                            title={missingContact.length ? `No related contact of ${missingContact.join(', ')}` : undefined}>
+                                            {contacts.length} contact{missingContact.length ? ` (none ${missingContact.join(', ')})` : ''}</Badge>
                                         {row.sealing === 'individual' && (
                                             <Badge size="xs" color={seals.length ? 'green' : 'red'}>{seals.length} seal</Badge>)}
-                                        <Badge size="xs" color={blanks.length === 1 ? 'green' : 'orange'}>{blanks.length} blank</Badge>
+                                        {row.blank
+                                            ? <Badge size="xs" color="green" title="Chosen blank">blank {row.blank}</Badge>
+                                            : <Badge size="xs" color={blanks.length === 1 ? 'green' : 'orange'}>{blanks.length} blank</Badge>}
                                     </Group>}
                                     {(row.problems || []).map((p, j) => <Text key={j} size="xs" c="red">{p}</Text>)}
                                 </Table.Td>
@@ -713,7 +758,7 @@ function OMGCavityPanel({ context }: { context: InvenTreePluginContext }) {
             </Table>
             <Group>
                 <Button size="xs" variant="light"
-                    onClick={() => setRows((old) => [...old, { cavities: '', series: '', sealing: 'none', max_od: '' }])}>
+                    onClick={() => setRows((old) => [...old, { cavities: '', series: '', sealing: 'none', max_od: '', blank: '' }])}>
                     Add range</Button>
                 <Button size="xs" variant="light" onClick={lookUp}>Find parts for these series</Button>
             </Group>

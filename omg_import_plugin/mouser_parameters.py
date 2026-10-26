@@ -29,6 +29,8 @@ from .selection_match import join_items, split_items, suggest
 # Component Type from the words in a Mouser listing (description + attribute
 # values), first match wins - most specific first.
 TYPE_WORDS = (
+    # a diode plug (moulded, plugs into a connector) or an inline diode - first: "diode plug" is no Connector
+    ('Diode', (r'\bdiodes?\b',)),
     # Deutsch wedgelocks are the connector's Lock (W2S...); Secondary Lock is
     # for housings that need a separate TPA as well (e.g. Bosch EMS).
     ('Secondary Lock', (r'secondary lock', r'\btpa\b', r'terminal position assur')),
@@ -154,7 +156,7 @@ def _mating_side(data):
     fits - a splice plug that is a plug fits a receptacle. "Splice plug" /
     "jumper plug" in the name doesn't count as saying it's a plug.
     """
-    text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?)\s+plugs?\b', '', _text(data))
+    text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?|diode)\s+plugs?\b', '', _text(data))
     if re.search(r'receptacle|\brcpt\b|\brecp\b', text):
         return 'Plug'
     if re.search(r'\bplug\b', text):
@@ -209,7 +211,7 @@ def omg_values(data, component_type):
             values['connector.contact_count'] = str(data['contact_count'])
         values['connector.series'] = _series(data)
         values['connector.side'] = _side(data)
-    elif component_type == 'Splice Plug':
+    elif component_type in ('Splice Plug', 'Diode'):     # a diode plug fits like a splice plug
         values['connector.series'] = _series(data)
         values['connector.side'] = _mating_side(data)
     elif component_type:      # an accessory kind (Lock, Boot, Cover...)

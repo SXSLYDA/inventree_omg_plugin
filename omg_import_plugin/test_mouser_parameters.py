@@ -119,3 +119,11 @@ class HarnessListingTests(unittest.TestCase):
             self.assertFalse(harness_listing({'category': category}), category)
         self.assertFalse(harness_listing({}))
 
+
+
+class DiodeTests(unittest.TestCase):
+    def test_diode_plug_and_inline_diode(self):
+        plug = {'description': 'Diode plug, DT, 2 way, plug', 'attributes': {'Series': 'DT'}}
+        self.assertEqual(guess_component_type(plug), 'Diode')
+        self.assertEqual(omg_values(plug, 'Diode').get('connector.side'), 'Receptacle')   # a plug fits a receptacle
+        self.assertEqual(guess_component_type({'description': 'Rectifier Diode 1A 1000V'}), 'Diode')
