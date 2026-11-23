@@ -19,6 +19,10 @@ Design decisions worth knowing about before you wire this in:
    chooses contacts or blanks itself, and has no parameter-name settings:
    OMG sends its mapping in payload["parameter_names"].
 
+2b. Coverings (braid, sleeving, heatshrink, ties - payload["coverings"]) and the heatshrink over
+   heatshrunk flying leads (part_logic["lead_sleeves"]) are added in each InvenTree part's own Units:
+   metres / mm by length, kg / g by weight (braid yarn), else a count (_apply_materials).
+
 3. Re-running this on a harness that's already been imported will
    update quantities on existing BomItems (via update_or_create) but
    will NOT delete BomItems for parts that dropped out of the current
@@ -730,6 +734,9 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
 
         _add_bom_qty(bom_totals, part, agg["quantity"])
 
+    # --- Coverings (braid, sleeving, heatshrink, ties) and flying-lead heatshrink ---
+    _apply_materials(batch, omg_bom_data.get("coverings", []), (part_logic or {}).get("lead_sleeves", []), bom_totals)
+
     for part, quantity in bom_totals.values():
         _upsert_bom_line(batch, harness_part, part, quantity)
     seen_sub_part_pks = set(bom_totals)
@@ -750,6 +757,8 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
         + len(omg_bom_data.get("accessories", []))
         + len(omg_bom_data.get("sub_harnesses", []))
         + len(omg_bom_data.get("junctions", []))
+        + len(omg_bom_data.get("coverings", []))
+        + len((part_logic or {}).get("lead_sleeves", []))
     )
     batch.matched_items = len(seen_sub_part_pks)
     batch.flagged_items = batch.items.count()
@@ -789,6 +798,69 @@ def _close_superseded_review_items(harness_part, current_batch):
 def _connector_qty(c):
     """One per connector, or for a lug one per different lug symbol - OMG sends it."""
     return max(1, int(c.get("quantity") or 1))
+
+
+LENGTH_UNITS = {"m": 1.0, "metre": 1.0, "metres": 1.0, "meter": 1.0, "meters": 1.0, "mm": 1000.0, "cm": 100.0}
+WEIGHT_UNITS = {"kg": 1.0, "kilogram": 1.0, "kilograms": 1.0, "g": 1000.0, "gram": 1000.0, "grams": 1000.0}
+
+
+def _material_quantity(part, metres=None, kg=None, count=None):
+    """
+    A covering's BOM quantity in the InvenTree part's own Units: by length (m / mm / cm), by weight (kg / g -
+    braid yarn with a Yarn Weight), else a count. OMG gives what it knows; the part's Units choose.
+    """
+    units = (part.units or "").strip().lower()
+    if units in WEIGHT_UNITS and kg is not None:
+        return round(kg * WEIGHT_UNITS[units], 4)
+    if units in LENGTH_UNITS and metres is not None:
+        return round(metres * LENGTH_UNITS[units], 4)
+    if count is not None:
+        return count
+    return metres if metres is not None else (kg or 0)
+
+
+def _material_part(batch, line, what):
+    """The InvenTree part of a covering / heatshrink line: OMG's pk, else its part number (one exact match).
+    None (flagged) when there isn't one."""
+    part = Part.objects.filter(pk=line.get("inventree_pk")).first() if line.get("inventree_pk") else None
+    if part is not None:
+        return part
+    part_no = (line.get("part_no") or "").strip()
+    candidates = _find_candidates(part_no) if part_no else []
+    if len(candidates) == 1:
+        return candidates[0]
+    UnresolvedImportItem.objects.create(
+        batch=batch, part_number=part_no or what, quantity=line.get("quantity") or 0,
+        reason=UnresolvedImportItem.Reason.AMBIGUOUS if len(candidates) > 1 else UnresolvedImportItem.Reason.NOT_FOUND,
+        notes=(f"{what} '{part_no}' matches more than one InvenTree part - choose which." if len(candidates) > 1
+               else f"{what}: {NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no)}" if part_no
+               else f"OMG has no part number for this {what} - set it in OMG Default Settings."),
+    )
+    return None
+
+
+def _apply_materials(batch, coverings, lead_sleeves, bom_totals):
+    """
+    OMG's covering lines (payload "coverings": braid / sleeving / heatshrink / ties with quantity + unit -
+    metres, pieces or metres of yarn with its kg) and the heatshrink over heatshrunk flying leads
+    (part_logic "lead_sleeves": leads, total length_mm) - each added in its InvenTree part's own Units.
+    """
+    for line in coverings or []:
+        part = _material_part(batch, line, f"{line.get('kind') or 'covering'} {line.get('label') or ''}".strip())
+        if part is None:
+            continue
+        unit = str(line.get("unit") or "").lower()
+        qty = line.get("quantity") or 0
+        metres = qty if unit.startswith("m") else None
+        _add_bom_qty(bom_totals, part, _material_quantity(part, metres=metres, kg=line.get("kg"),
+                                                          count=None if metres is not None else qty))
+    for line in lead_sleeves or []:
+        part = _material_part(batch, line, "flying-lead heatshrink")
+        if part is None:
+            continue
+        length = line.get("length_mm") or 0
+        _add_bom_qty(bom_totals, part, _material_quantity(part, metres=(length / 1000.0) if length else None,
+                                                          count=line.get("quantity") or 0))
 
 
 def _add_bom_qty(bom_totals, part, quantity):

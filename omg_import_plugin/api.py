@@ -654,7 +654,32 @@ from .sales_order_export import SalesOrderPartsListExportView
 from .part_setup import CavitySetupView, PartSetupView
 from .accessory_setup import AccessorySetupView
 
+class OmgSyncView(APIView):
+    """
+    Parts changed in InvenTree that OMG hasn't heard about yet (models.OmgSyncPending, omg_refresh.py):
+      GET  /plugin/omg-harness-import/omg-sync/[?part=<pk>]   the flags (all, or one part's)
+      POST /plugin/omg-harness-import/omg-sync/ {parts: [pk]} report them to OMG again (all when no parts)
+    """
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        from .models import OmgSyncPending
+        rows = OmgSyncPending.objects.select_related("part").order_by("first_failed")
+        if request.query_params.get("part"):
+            rows = rows.filter(part_id=request.query_params["part"])
+        return Response({"pending": [{"part": r.part_id, "name": r.part.name, "ipn": r.part.IPN, "error": r.error,
+                                      "unchecked": r.unchecked, "attempts": r.attempts,
+                                      "since": r.first_failed, "last_attempt": r.last_attempt} for r in rows]})
+
+    def post(self, request):
+        from .omg_refresh import retry_pending
+        parts = request.data.get("parts")
+        sent, waiting = retry_pending([int(p) for p in parts] if parts else None)
+        return Response({"sent": sent, "waiting": waiting})
+
+
 urlpatterns = [
+    path("omg-sync/", OmgSyncView.as_view(), name="omg-sync"),
     path("import/", ImportView.as_view(), name="omg-import"),
     path("unresolved/", UnresolvedQueueView.as_view(), name="omg-unresolved"),
     path("unresolved/<int:item_id>/resolve/", ResolveItemView.as_view(), name="omg-resolve-item"),

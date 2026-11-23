@@ -31,15 +31,19 @@ from .selection_match import join_items, split_items, suggest
 TYPE_WORDS = (
     # a diode plug (moulded, plugs into a connector) or an inline diode - first: "diode plug" is no Connector
     ('Diode', (r'\bdiodes?\b',)),
+    # plugs whose pins are joined - before Connector ("plug")
+    ('Loop Plug', (r'\bloop ?(?:back )?plug', r'\bshorting plug')),
+    ('Splice Plug', (r'splice plug', r'jumper plug', r'\bbuss(?:ed)?\b(?! ?bar)')),
     # Deutsch wedgelocks are the connector's Lock (W2S...); Secondary Lock is
     # for housings that need a separate TPA as well (e.g. Bosch EMS).
     ('Secondary Lock', (r'secondary lock', r'\btpa\b', r'terminal position assur')),
     ('Lock', (r'\block\b', r'wedge ?lock', r'\blatch\b', r'\bwedge\b')),
     ('Boot', (r'\bboot\b',)),
     ('Backshell', (r'back ?shell',)),
-    ('Cover', (r'\bcover\b', r'\bcap\b', r'dust cap')),
+    ('Cap', (r'\bcover\b', r'\bcap\b', r'dust cap')),      # OMG has no Cover - a cap closes a connector off
     ('Seal', (r'\bseal\b', r'grommet', r'wire seal')),
     ('Blank', (r'cavity plug', r'sealing plug', r'\bblank', r'filler plug', r'dummy plug')),
+    ('Ferrule', (r'\bferrules?\b', r'\bbootlace\b', r'\bend sleeve\b')),
     # a ring lug / spade / eyelet used on its own (pins - + * #), not a contact in a housing
     ('Terminal', (r'ring terminal', r'\blug\b', r'\bspade\b', r'\beyelet\b', r'quick disconnect', r'\bfork terminal')),
     ('Contact', (r'\bcontact\b', r'\bterminal\b', r'\bsocket contact', r'\bpin contact', r'crimp')),
@@ -152,11 +156,11 @@ def _side(data):
 
 def _mating_side(data):
     """
-    A splice plug's Side: like every accessory, the side of the connector it
-    fits - a splice plug that is a plug fits a receptacle. "Splice plug" /
-    "jumper plug" in the name doesn't count as saying it's a plug.
+    A splice / loop / diode plug's Side: like every accessory, the side of the
+    connector it fits - a splice plug that is a plug fits a receptacle.
+    "Splice plug" / "loop plug" in the name doesn't count as saying it's a plug.
     """
-    text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?|diode)\s+plugs?\b', '', _text(data))
+    text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?|diode|loop(?: ?back)?|shorting)\s+plugs?\b', '', _text(data))
     if re.search(r'receptacle|\brcpt\b|\brecp\b', text):
         return 'Plug'
     if re.search(r'\bplug\b', text):
@@ -196,7 +200,7 @@ def omg_values(data, component_type):
             values['wire.insulation_od'] = f"{float(data['outer_diameter']):g}"
         if component_type == 'Multicore':
             values['multicore.core_count'] = _num(_attr(data, 'core_count'))
-    elif component_type in ('Contact', 'Terminal'):
+    elif component_type in ('Contact', 'Terminal', 'Ferrule'):
         if 'awg_range' in gauges:
             values['contact.min_gauge'], values['contact.max_gauge'] = (f"{a} AWG" for a in gauges['awg_range'])
         elif 'awg' in gauges:
@@ -211,10 +215,10 @@ def omg_values(data, component_type):
             values['connector.contact_count'] = str(data['contact_count'])
         values['connector.series'] = _series(data)
         values['connector.side'] = _side(data)
-    elif component_type in ('Splice Plug', 'Diode'):     # a diode plug fits like a splice plug
+    elif component_type in ('Splice Plug', 'Loop Plug', 'Diode'):     # loop / diode plugs fit like a splice plug
         values['connector.series'] = _series(data)
         values['connector.side'] = _mating_side(data)
-    elif component_type:      # an accessory kind (Lock, Boot, Cover...)
+    elif component_type:      # an accessory kind (Lock, Boot, Cap...)
         values['connector.series'] = _series(data)
         values['connector.side'] = _side(data)
     return {role: value for role, value in values.items() if str(value or '').strip()}

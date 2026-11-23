@@ -240,6 +240,47 @@ interface SetupState {
     accessory_types: string[];
 }
 
+// "Changed in InvenTree - OMG not updated" on this part (the plugin's omg_refresh.py), with Retry.
+function OmgSyncFlag({ context, partId }: { context: InvenTreePluginContext; partId: number }) {
+    const [flag, setFlag] = useState<{ error: string; unchecked: boolean; since: string } | null>(null);
+    const [busy, setBusy] = useState(false);
+    const url = '/plugin/omg-harness-import/omg-sync/';
+    const load = useCallback(async () => {
+        try {
+            const response = await context.api.get(url, { params: { part: partId } });
+            setFlag(response.data.pending[0] || null);
+        } catch {
+            setFlag(null);
+        }
+    }, [context.api, partId]);
+    useEffect(() => { load(); }, [load]);
+    if (!flag) return null;
+    const retry = async () => {
+        setBusy(true);
+        try {
+            const response = await context.api.post(url, { parts: [partId] });
+            notifications.show({
+                color: response.data.waiting ? 'orange' : 'green',
+                message: response.data.waiting ? "OMG still can't be reached." : 'Sent to OMG.',
+            });
+            await load();
+        } finally {
+            setBusy(false);
+        }
+    };
+    return (
+        <Alert color="red" title="Changed in InvenTree - OMG not updated">
+            <Group justify="space-between" wrap="nowrap">
+                <Text size="sm">
+                    Since {new Date(flag.since).toLocaleString()}: {flag.error}
+                    {flag.unchecked ? ' Saved without OMG\'s harness check - OMG checks it when it catches up.' : ''}
+                </Text>
+                <Button size="xs" loading={busy} onClick={retry}>Retry now</Button>
+            </Group>
+        </Alert>
+    );
+}
+
 function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
     const partId = context.id;
     const [state, setState] = useState<SetupState | null>(null);
@@ -414,6 +455,7 @@ function OMGPartSetupPanel({ context }: { context: InvenTreePluginContext }) {
                 <Title order={4}>OMG Part Setup</Title>
                 <Button size="xs" variant="subtle" onClick={() => load(true)}>Reload from OMG</Button>
             </Group>
+            <OmgSyncFlag context={context} partId={Number(partId)} />
             <PartDataCheck context={context} partId={Number(partId)} />
             <Text size="sm" c="dimmed">
                 Pick what this part is, then fill in what OMG needs for it. Gauge mm² and AWG fill each

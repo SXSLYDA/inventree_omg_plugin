@@ -204,3 +204,26 @@ class HarnessImportJob(models.Model):
     class Meta:
         app_label = "omg_import_plugin"
         ordering = ["-created_at"]
+
+
+class OmgSyncPending(models.Model):
+    """
+    A part changed (or made) in InvenTree that OMG hasn't heard about yet - OMG couldn't be reached when the
+    plugin reported it (omg_refresh.py). Shown as "Changed in InvenTree - OMG not updated" on the OMG Parts
+    dashboard item and the part's OMG Part Setup panel; retried every few minutes (the plugin's scheduled
+    task) and by the Retry buttons, and removed once OMG has it. unchecked: the change was saved without
+    OMG's harness check (OMG was down) - OMG works out what it broke when it re-reads the part.
+    """
+    part = models.OneToOneField("part.Part", on_delete=models.CASCADE, related_name="omg_sync_pending")
+    error = models.TextField(blank=True)
+    unchecked = models.BooleanField(default=False)
+    attempts = models.PositiveIntegerField(default=0)
+    first_failed = models.DateTimeField(auto_now_add=True)
+    last_attempt = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = "Part not updated in OMG"
+        verbose_name_plural = "Parts not updated in OMG"
+
+    def __str__(self):
+        return f"{self.part} - OMG not updated"

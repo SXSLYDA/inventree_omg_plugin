@@ -45,6 +45,8 @@ TYPE_RULES = (
     # a plug whose pins are bussed together (bought or built, its own part) - before the
     # way-count connector rule: "Plug, DT, 12 way, bussed" is a splice plug
     ('Splice Plug', (r'splice plug', r'jumper plug', r'\bbuss(?:ed)?\b(?! ?bar)')),
+    # a plug looping a pair or two of its pins (loop-back / shorting plug) - fitted like a splice plug
+    ('Loop Plug', (r'\bloop ?(?:back )?plug', r'\bshorting plug')),
     # a diode plug (moulded, plugs into a connector) or an inline diode - not a connector
     ('Diode', (r'\bdiodes?\b',)),
     ('', (r'connector seal,', r'^seal, front', r'panel nut', r'lockwasher', r'jam nut')),
@@ -53,12 +55,14 @@ TYPE_RULES = (
     ('Holding Plate', (r'holding plate',)),
     ('Backshell', (r'back ?shell', r'\bendbell\b')),
     ('Boot', (r'\bboot\b(?! adapter)',)),
-    ('Cover', (r'\bcover\b', r'\bdust cap\b', r'^cap\b')),
+    ('Cap', (r'\bcover\b', r'\bdust cap\b', r'^cap\b')),       # OMG has no Cover - a cap closes a connector off
     ('Blank', (r'cavity plug', r'sealing plug', r'blanking plug', r'\bdummy (?:terminal|plug)\b', r'filler plug')),
     ('Connector', (r'\bhousing\b',)),          # "Socket housing" is a connector, not a socket contact
     # a way count before the seal rule: "Recept., HDP20, 24 shell, 23 way, black, E seal, ..." is a connector
     ('Connector', (r'\b\d{1,3}\s*-?\s*way\b',)),
     ('Seal', (r'\bwire seal\b', r'^seal\b', r'single wire seal\b', r'\bseal, ')),
+    # a flying lead's end: a bootlace ferrule (OMG picks it by wire size, like a contact)
+    ('Ferrule', (r'\bferrules?\b', r'\bbootlace\b', r'\bend sleeve\b')),
     # a ring lug / spade on its own: its "pins" are - + * #, no cavities
     ('Terminal', (r'\blug\b', r'\bspade\b', r'ring terminal', r'\beyelet\b', r'fork terminal')),
     ('Contact', (r'\bsz\. ?\d', r'\bs&f\b', r'^(?:size \d+ )?(?:pin|socket|tab)\b', r'\bcontact pin\b',
@@ -284,9 +288,9 @@ def _proposals(part, config, lists, current):
     data = mouser_like(part, config)
     values = omg_values(data, ctype)
     text = data['description'].lower()
-    accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Terminal', 'Contact', 'Seal', 'Blank')
+    accessory = ctype not in ('Wire', 'Multicore', 'Connector', 'Terminal', 'Contact', 'Ferrule', 'Seal', 'Blank')
     if accessory:
-        if 'plug' in text and 'receptacle' in text and ctype not in ('Splice Plug', 'Diode'):
+        if 'plug' in text and 'receptacle' in text and ctype not in ('Splice Plug', 'Loop Plug', 'Diode'):
             values['connector.side'] = 'Both'      # "for plug or recept."
         if data.get('contact_count'):
             values['accessory.ways'] = str(data['contact_count'])

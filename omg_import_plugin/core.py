@@ -53,13 +53,14 @@ and the Mouser supplier Company are set on the Mouser Integration plugin.
 """
 
 from plugin import InvenTreePlugin
-from plugin.mixins import AppMixin, EventMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin, ValidationMixin
+from plugin.mixins import (AppMixin, EventMixin, ScheduleMixin, SettingsMixin, UrlsMixin, UserInterfaceMixin,
+                           ValidationMixin)
 
 from .version import OMG_IMPORT_PLUGIN_VERSION
 
 
 class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMixin, EventMixin,
-                             ValidationMixin, InvenTreePlugin):
+                             ValidationMixin, ScheduleMixin, InvenTreePlugin):
     NAME = "OmgHarnessImport"
     SLUG = "omg-harness-import"
     TITLE = "OMG Harness Import"
@@ -106,6 +107,15 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
                            "to be moved to their own category. Blank = 'OMG Pending Parts' is created the first time.",
             "model": "part.partcategory",
         },
+        "OMG_CHANGE_CHECK": {
+            "name": "OMG harness check",
+            "description": "Before saving a Component Type or Cavity Map, making a part inactive, deleting a part or "
+                           "removing a related part, ask OMG whether it would break a harness. Refuse: InvenTree "
+                           "refuses it with OMG's reason. Warn: it's saved and OMG records it. Off: OMG isn't asked. "
+                           "If OMG can't be reached the change is saved and the part flagged for OMG to catch up.",
+            "choices": [("refuse", "Refuse"), ("warn", "Warn"), ("off", "Off")],
+            "default": "refuse",
+        },
         "AMBIGUOUS_SEARCH_LIMIT": {
             "name": "Ambiguous candidate limit",
             "description": "When a part number matches several InvenTree parts (by name/IPN containing it), "
@@ -114,6 +124,16 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
             "validator": int,
         },
     }
+
+    # --- ScheduleMixin: parts changed here that OMG hasn't heard about yet (omg_refresh.retry_pending) ---
+    SCHEDULED_TASKS = {
+        "omg_sync_retry": {"func": "retry_omg_sync", "schedule": "I", "minutes": 5},
+    }
+
+    def retry_omg_sync(self, *args, **kwargs):
+        """Report the parts flagged "Changed in InvenTree - OMG not updated" to OMG again."""
+        from .omg_refresh import retry_pending
+        return retry_pending()
 
     # --- Mouser Integration plugin hooks (inventree-mouser's hooks.py) ---
 
@@ -150,9 +170,9 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
             return []
         return _set_omg_parameters(part, data, kind)
 
-    # --- EventMixin: wire gauge auto-fill (gauge_autofill.py) ---
+    # --- EventMixin: wire gauge auto-fill (gauge_autofill.py) and telling OMG (omg_refresh.py) ---
     # Needs InvenTree's "Enable event integration" plugin setting and the
-    # background worker. Only parameter-save events are taken.
+    # background worker. Parameter, related-part and part create / save events.
 
     def wants_process_event(self, event):
         from .omg_refresh import events
@@ -168,10 +188,23 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
     # --- ValidationMixin: gauge values (gauge_autofill.validate_gauge_value) ---
 
     def validate_parameter(self, parameter, data):
+        from .change_check import check_parameter
         from .gauge_autofill import validate_gauge_value
         from .selection_lists import validate_list_items
         validate_gauge_value(self, parameter, data)
-        return validate_list_items(self, parameter, data)
+        result = validate_list_items(self, parameter, data)
+        check_parameter(parameter, data)         # last: only a value that's otherwise fine is put to OMG
+        return result
+
+    # --- ValidationMixin: OMG's harness check (change_check.py) ---
+
+    def validate_model_instance(self, instance, deltas=None):
+        from .change_check import check_instance
+        check_instance(instance)
+
+    def validate_model_delete(self, instance):
+        from .change_check import check_delete
+        check_delete(instance)
 
     def _is_connector(self, part):
         """Component Type = Connector (OMG's template name), or it already has a cavity map."""
@@ -185,7 +218,7 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
         return bool(get_part_parameter_str(part, map_name))
 
     def _is_accessory(self, part):
-        """Component Type is an accessory kind - Lock, Secondary Lock, Boot, Cover, Backshell, Holding Plate, Hardware."""
+        """Component Type is an accessory kind - Lock, Secondary Lock, Boot, Cap, Backshell, Holding Plate, Hardware."""
         from .accessory_setup import is_accessory_part
         from .part_setup import _config_cache
         return is_accessory_part(part, _config_cache.get("data") or {})

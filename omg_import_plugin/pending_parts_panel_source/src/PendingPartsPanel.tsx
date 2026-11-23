@@ -4,10 +4,12 @@ import { Alert, Anchor, Badge, Button, Checkbox, Group, Loader, Stack, Table, Ta
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
 /**
- * "OMG Parts" dashboard item - two tabs:
+ * "OMG Parts" dashboard item - tabs:
  *   Pending      parts picked from Mouser in OMG, not in InvenTree yet (pending_parts.py)
  *   Needs setup  OMG's Part Data Check: parts OMG uses that are missing
  *                what it needs (read from OMG; OMG re-checks in the background)
+ *   Not in OMG   parts changed here that OMG hasn't heard about yet - it couldn't be
+ *                reached (omg_refresh.py); retried every few minutes, or now
  *
  * Pending:
  * Parts picked from Mouser inside OMG that aren't in InvenTree yet. Tick
@@ -505,8 +507,71 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
     );
 }
 
+interface SyncRow { part: number; name: string; ipn: string; error: string; unchecked: boolean; attempts: number; since: string; }
+const SYNC_URL = '/plugin/omg-harness-import/omg-sync/';
+
+// Parts changed in InvenTree that OMG hasn't heard about yet (models.OmgSyncPending).
+function NotInOmg({ context, onCount }: { context: InvenTreePluginContext; onCount: (n: number) => void }) {
+    const [rows, setRows] = useState<SyncRow[] | null>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [busy, setBusy] = useState(false);
+    const [note, setNote] = useState<string | null>(null);
+    const load = useCallback(async () => {
+        try {
+            const response = await context.api.get(SYNC_URL, { timeout: READ_TIMEOUT_MS });
+            setRows(response.data.pending);
+            onCount(response.data.pending.length);
+            setError(null);
+        } catch (err: any) {
+            setError(apiError(err, "Couldn't read the parts waiting for OMG."));
+        }
+    }, [context.api, onCount]);
+    useEffect(() => { load(); }, [load]);
+    const retry = async () => {
+        setBusy(true);
+        try {
+            const response = await context.api.post(SYNC_URL, {}, { timeout: WRITE_TIMEOUT_MS });
+            const { sent, waiting } = response.data;
+            setNote(waiting ? `OMG still can't be reached - ${waiting} waiting.` : `${sent} sent to OMG.`);
+            await load();
+        } catch (err: any) {
+            setNote(apiError(err, 'Retry failed.'));
+        } finally {
+            setBusy(false);
+        }
+    };
+    if (error) return <Alert color="red">{error}</Alert>;
+    if (rows === null) return <Loader size="sm" />;
+    if (!rows.length) return <Text size="sm" c="dimmed">Every part changed here has reached OMG.</Text>;
+    return (
+        <Stack gap="xs">
+            <Group justify="space-between">
+                <Text size="sm">Changed in InvenTree - OMG not updated. Retried every few minutes.</Text>
+                <Button size="xs" loading={busy} onClick={retry}>Retry now</Button>
+            </Group>
+            {note && <Alert color="blue">{note}</Alert>}
+            <Table striped withTableBorder>
+                <Table.Thead><Table.Tr><Table.Th>Part</Table.Th><Table.Th>Since</Table.Th><Table.Th>Why</Table.Th></Table.Tr></Table.Thead>
+                <Table.Tbody>
+                    {rows.map((r) => (
+                        <Table.Tr key={r.part}>
+                            <Table.Td><PartLink context={context} pk={r.part} name={r.ipn || r.name} /></Table.Td>
+                            <Table.Td>{new Date(r.since).toLocaleString()}</Table.Td>
+                            <Table.Td>
+                                {r.unchecked && <Badge size="xs" color="orange" mr={4}>not checked by OMG</Badge>}
+                                <Text size="xs" span>{r.error}</Text>
+                            </Table.Td>
+                        </Table.Tr>
+                    ))}
+                </Table.Tbody>
+            </Table>
+        </Stack>
+    );
+}
+
 function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
     const [problems, setProblems] = useState<number | null>(null);
+    const [waiting, setWaiting] = useState<number | null>(null);
     return (
         <Stack gap="xs">
             <Text size="sm" fw={600} c={context.theme.primaryColor}>OMG Parts</Text>
@@ -517,10 +582,14 @@ function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
                         Needs setup
                     </Tabs.Tab>
                     <Tabs.Tab value="fill">Auto-fill</Tabs.Tab>
+                    <Tabs.Tab value="sync" rightSection={waiting ? <Badge size="xs" color="red">{waiting}</Badge> : null}>
+                        Not in OMG
+                    </Tabs.Tab>
                 </Tabs.List>
                 <Tabs.Panel value="pending" pt="xs"><PendingPartsItem context={context} /></Tabs.Panel>
                 <Tabs.Panel value="setup" pt="xs"><NeedsSetup context={context} onCount={setProblems} /></Tabs.Panel>
                 <Tabs.Panel value="fill" pt="xs"><AutoFill context={context} /></Tabs.Panel>
+                <Tabs.Panel value="sync" pt="xs"><NotInOmg context={context} onCount={setWaiting} /></Tabs.Panel>
             </Tabs>
         </Stack>
     );
