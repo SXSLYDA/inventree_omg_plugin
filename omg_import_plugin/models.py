@@ -222,6 +222,7 @@ class OmgSyncPending(models.Model):
     last_attempt = models.DateTimeField(auto_now=True)
 
     class Meta:
+        app_label = "omg_import_plugin"
         verbose_name = "Part not updated in OMG"
         verbose_name_plural = "Parts not updated in OMG"
 

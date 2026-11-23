@@ -12,7 +12,7 @@ specific admin screen.
 
 from django.contrib import admin
 
-from .models import HarnessImportJob, ImportBatch, OmgUserCredential, UnresolvedImportItem
+from .models import HarnessImportJob, ImportBatch, OmgSyncPending, OmgUserCredential, UnresolvedImportItem
 
 
 @admin.register(ImportBatch)
@@ -52,3 +52,14 @@ class HarnessImportJobAdmin(admin.ModelAdmin):
     list_filter = ["status"]
     search_fields = ["harness_part_number", "error"]
     readonly_fields = [f.name for f in HarnessImportJob._meta.fields]
+
+
+# Every model here needs an admin: InvenTree's AppMixin re-runs this file on a plugin reload whenever one of the
+# plugin's models isn't registered, and then the others fail as "already registered".
+@admin.register(OmgSyncPending)
+class OmgSyncPendingAdmin(admin.ModelAdmin):
+    list_display = ["part", "unchecked", "attempts", "first_failed", "last_attempt", "error"]
+    list_filter = ["unchecked"]
+    search_fields = ["part__name", "part__IPN", "error"]
+    readonly_fields = ["first_failed", "last_attempt"]
+

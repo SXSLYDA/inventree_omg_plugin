@@ -202,7 +202,7 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
         from .change_check import check_instance
         check_instance(instance)
 
-    def validate_model_delete(self, instance):
+    def validate_model_deletion(self, instance):
         from .change_check import check_delete
         check_delete(instance)
 

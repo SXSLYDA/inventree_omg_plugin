@@ -6,6 +6,11 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.12 — 2026-11-23
+
+- **Fix: the plugin didn't load after 0.6.11** ("Model class omg_import_plugin.models.OmgSyncPending doesn't declare an explicit app_label" - InvenTree showed it as not installed). The new OmgSyncPending model now has its `app_label`, like the others (README, known issue 1), and an admin page - without one InvenTree re-runs admin.py on every plugin reload and fails with "ImportBatch is already registered". Its table is made by the normal update (the plugin's app has no migrations, so `migrate --run-syncdb` makes it). Checked by loading the plugin in InvenTree 1.7.3.
+- **Fix: the OMG harness check on deleting a part / removing a related part never ran** - the hook was named `validate_model_delete`; InvenTree calls `validate_model_deletion`. No migration, no panel rebuild (`-SkipBuild` is fine).
+
 ## 0.6.11 — 2026-11-23
 
 - **"Changed in InvenTree - OMG not updated" flag, with retry** (needs OMG with the full parts store, 23 Nov (d)): a part created or saved in InvenTree is now reported to OMG (as well as parameter / related changes). If OMG can't be reached the part is flagged (new model **OmgSyncPending** - **adds a migration**), shown as a banner with Retry on the OMG Part Setup panel and a new **Not in OMG** tab on the pending parts panel. A scheduled task (`retry_omg_sync`, every 5 minutes) sends flagged parts again until OMG has them. API: `omg-sync/` (GET `?part=`, POST `{"parts": [...]}`).
