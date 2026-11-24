@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Anchor, Badge, Button, Checkbox, Group, Loader, Stack, Table, Tabs, Text } from '@mantine/core';
+import { Accordion, ActionIcon, Alert, Anchor, Badge, Button, Checkbox, Group, Loader, Stack, Table, Tabs, Text, Tooltip } from '@mantine/core';
+import { IconInfoCircle, IconRefresh } from '@tabler/icons-react';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
@@ -38,8 +39,8 @@ interface Result { id: number; mpn: string; status: string; part: PartRow | null
 const URL = '/plugin/omg-harness-import/pending-parts/';
 
 // A part link that opens INSIDE InvenTree (its router - no page reload, so no
-// login check on every click) on the right panel: OMG Part Setup, or OMG
-// Cavities for cavity problems. Ctrl / middle-click still opens a new tab.
+// login check on every click) on its OMG Setup panel - on the Cavities tab
+// for cavity problems. Ctrl / middle-click still opens a new tab.
 function PartLink({ context, pk, name, panel = 'omg-part-setup' }:
     { context: InvenTreePluginContext; pk: number; name: string; panel?: string }) {
     const path = `/part/${pk}/${panel}`;
@@ -52,8 +53,18 @@ function PartLink({ context, pk, name, panel = 'omg-part-setup' }:
     );
 }
 
-// Data-check problems that are fixed on the OMG Cavities panel
+// Data-check problems that are fixed on OMG Setup's Cavities tab
 const CAVITY_CHECKS = new Set(['cavity_map', 'count', 'series', 'related']);
+const CAVITIES_TAB = 'omg-part-setup?tab=cavities';
+
+// The longer explanations live behind an (i) instead of in the widget
+function Help({ text }: { text: string }) {
+    return (
+        <Tooltip multiline w={320} withArrow label={text}>
+            <IconInfoCircle size={14} style={{ color: 'var(--mantine-color-gray-5)', flexShrink: 0 }} />
+        </Tooltip>
+    );
+}
 // These calls reach OMG (and an import reaches Mouser per part) - far longer
 // than the 5s default of InvenTree's API client ("timeout of 5000ms exceeded").
 const READ_TIMEOUT_MS = 60000;
@@ -69,7 +80,7 @@ function usesText(uses: Use[]) {
     return uses.length > 3 ? `${shown} and ${uses.length - 3} more` : shown;
 }
 
-function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
+function PendingPartsItem({ context, onCount }: { context: InvenTreePluginContext; onCount: (n: number) => void }) {
     const [state, setState] = useState<State | null>(null);
     const [loading, setLoading] = useState(true);
     const [loadError, setLoadError] = useState<string | null>(null);
@@ -84,13 +95,14 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
         try {
             const response = await context.api.get(URL, { timeout: READ_TIMEOUT_MS });
             setState(response.data);
+            onCount((response.data.items || []).length);
             setPicked(new Set());
         } catch (err) {
             setLoadError(apiError(err, "Couldn't load OMG's pending parts."));
         } finally {
             setLoading(false);
         }
-    }, [context.api]);
+    }, [context.api, onCount]);
 
     useEffect(() => { load(); }, [load]);
 
@@ -109,6 +121,7 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
             setResults(response.data.results || []);
             setReportErrors(response.data.report_errors || []);
             setState(response.data.state);
+            onCount((response.data.state?.items || []).length);
             setPicked(new Set());
         } catch (err) {
             setReportErrors([apiError(err, 'The import failed.')]);
@@ -129,17 +142,12 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
         <Stack gap="xs">
             {state.error && <Alert color="red">{state.error}</Alert>}
             {!state.mouser_key_set && (
-                <Alert color="yellow">No Mouser API key in the plugin settings - parts are created from the data OMG
-                    stored when they were picked (prices may be out of date).</Alert>
+                <Alert color="yellow" p="xs"><Text size="xs">No Mouser API key in the plugin settings - parts are created
+                    from what OMG stored when they were picked (prices may be out of date).</Text></Alert>
             )}
-            <Text size="xs" c="dimmed">
-                New parts go into <b>{state.category ? state.category.name : 'OMG Pending Parts (created on first import)'}</b> -
-                move each to its own category afterwards. A part already in InvenTree (same name, MPN or Mouser number)
-                is linked instead of created.
-            </Text>
 
             {items.length === 0
-                ? <Text size="sm" c="dimmed">No pending parts - everything OMG uses is in InvenTree.</Text>
+                ? <Text size="sm" c="dimmed">Nothing pending - everything OMG uses is in InvenTree.</Text>
                 : (
                     <div style={{ maxHeight: 320, overflowY: 'auto' }}>
                         <Table striped withTableBorder verticalSpacing={4}>
@@ -171,9 +179,9 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
                                         </Table.Td>
                                         <Table.Td><Text size="xs">{usesText(i.used_by)}</Text></Table.Td>
                                         <Table.Td>
-                                            {i.matches.length === 0 && <Text size="xs" c="dimmed">No - will be created</Text>}
-                                            {i.matches.length === 1 && <Text size="xs">Yes - {partLink(i.matches[0])} (will be linked)</Text>}
-                                            {i.matches.length > 1 && <Text size="xs" c="orange">{i.matches.length} parts match - choose in the review list</Text>}
+                                            {i.matches.length === 0 && <Badge size="xs" variant="light" color="green">New - will be created</Badge>}
+                                            {i.matches.length === 1 && <Group gap={4} wrap="nowrap"><Badge size="xs" variant="light" color="blue">Link</Badge>{partLink(i.matches[0])}</Group>}
+                                            {i.matches.length > 1 && <Badge size="xs" variant="light" color="orange">{i.matches.length} match - choose on the harness</Badge>}
                                         </Table.Td>
                                     </Table.Tr>
                                 ))}
@@ -182,11 +190,13 @@ function PendingPartsItem({ context }: { context: InvenTreePluginContext }) {
                     </div>
                 )}
 
-            <Group>
+            <Group gap="xs">
                 <Button size="xs" onClick={runImport} loading={importing} disabled={!picked.size}>
                     Import {picked.size || ''} {picked.size === 1 ? 'part' : 'parts'}
                 </Button>
-                <Button size="xs" variant="subtle" onClick={load} disabled={importing}>Refresh</Button>
+                <Tooltip label="Refresh"><ActionIcon variant="subtle" onClick={load} disabled={importing}><IconRefresh size={16} /></ActionIcon></Tooltip>
+                <Text size="xs" c="dimmed">Into <b>{state.category ? state.category.name : 'OMG Pending Parts'}</b></Text>
+                <Help text="New parts go into this category - move each to its own category afterwards. A part already in InvenTree (same name, MPN or Mouser number) is linked instead of created." />
             </Group>
 
             {results && (
@@ -264,17 +274,20 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
     const checks = (report?.checks || []).filter((c) => c.issues.length);
     const total = checks.reduce((n, c) => n + c.issues.length, 0);
     const partLink = (i: CheckIssue, key: string) => (
-        <PartLink context={context} pk={i.part} name={i.name} panel={CAVITY_CHECKS.has(key) ? 'omg-cavities' : 'omg-part-setup'} />
+        <PartLink context={context} pk={i.part} name={i.name} panel={CAVITY_CHECKS.has(key) ? CAVITIES_TAB : 'omg-part-setup'} />
     );
 
     return (
         <Stack gap="xs">
-            <Group justify="space-between">
-                <Text size="xs" c="dimmed">
-                    {stored.running ? 'OMG is checking every part...'
-                        : stored.checked_at ? `Checked ${new Date(stored.checked_at).toLocaleString()}` : 'Not checked yet.'}
-                    {report && !stored.running && ` - ${report.parts_checked} parts, ${total} problems (parts on a harness first).`}
-                </Text>
+            <Group justify="space-between" wrap="nowrap">
+                <Group gap={6} wrap="nowrap">
+                    <Text size="xs" c="dimmed">
+                        {stored.running ? 'OMG is checking every part...'
+                            : stored.checked_at ? `Checked ${new Date(stored.checked_at).toLocaleString()}` : 'Not checked yet.'}
+                        {report && !stored.running && ` · ${report.parts_checked} parts · ${total} to fix`}
+                    </Text>
+                    <Help text="Parts OMG uses that are missing something it needs. Click a part to open its OMG Setup panel (on the right tab), fix it, then check again. Parts used on a harness are listed first." />
+                </Group>
                 <Button size="xs" variant="light" onClick={() => load(true)} loading={stored.running}>Check again</Button>
             </Group>
             {stored.error && !stored.running && <Alert color="red">The last check failed: {stored.error}</Alert>}
@@ -282,13 +295,17 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
                 <Alert color="yellow">No InvenTree template yet for {report.missing_templates.join(', ')} - OMG's InvenTree
                     Settings page (Part Parameters) can create them.</Alert>
             )}
-            {report && total === 0 && !stored.running && <Text size="sm">Nothing to fix - every part OMG uses is set up.</Text>}
-            <div style={{ maxHeight: 340, overflowY: 'auto' }}>
-                <Stack gap="sm">
+            {report && total === 0 && !stored.running && <Badge color="green" variant="light">Every part OMG uses is set up</Badge>}
+            <div style={{ maxHeight: 360, overflowY: 'auto' }}>
+                <Accordion multiple variant="contained" chevronPosition="left" defaultValue={checks.map((c) => c.key)}
+                    styles={{ control: { minHeight: 0 }, label: { paddingBlock: 6 }, content: { padding: 0 } }}>
                     {checks.map((c) => (
-                        <Stack key={c.key} gap={2}>
-                            <Group gap={6}><Text size="sm" fw={600}>{c.title}</Text><Badge size="xs" color="orange">{c.issues.length}</Badge></Group>
-                            <Table withTableBorder verticalSpacing={2}>
+                        <Accordion.Item key={c.key} value={c.key}>
+                            <Accordion.Control py={4}>
+                                <Group gap={6}><Text size="sm" fw={600}>{c.title}</Text><Badge size="xs" color="orange">{c.issues.length}</Badge></Group>
+                            </Accordion.Control>
+                            <Accordion.Panel>
+                            <Table verticalSpacing={2}>
                                 <Table.Tbody>
                                     {c.issues.map((i) => (
                                         <Table.Tr key={`${c.key}-${i.part}-${i.message}`}>
@@ -304,11 +321,11 @@ function NeedsSetup({ context, onCount }: { context: InvenTreePluginContext; onC
                                     ))}
                                 </Table.Tbody>
                             </Table>
-                        </Stack>
+                            </Accordion.Panel>
+                        </Accordion.Item>
                     ))}
-                </Stack>
+                </Accordion>
             </div>
-            <Text size="xs" c="dimmed">Fix a part on its page (OMG Part Setup and OMG Cavities panels), then check again.</Text>
         </Stack>
     );
 }
@@ -397,12 +414,10 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
     if (!preview) {
         return (
             <Stack gap="xs">
-                <Text size="xs" c="dimmed">
-                    Works out each part's Component Type and OMG's parameters from its description and category
-                    ("Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Black" = Wire,
-                    16 AWG / 1.5 mm², TXL, Black) - only for parameters a part doesn't have yet. You see everything
-                    before it's written; nothing already set is changed.
-                </Text>
+                <Group gap={6} wrap="nowrap">
+                    <Text size="sm">Fill in blank OMG parameters from each part's description and category.</Text>
+                    <Help text={'"Recept., DT, 8 way" = Connector, DT, 8 cavities, Receptacle; "Wire TXL 16AWG ... Black" = Wire, 16 AWG / 1.5 mm², TXL, Black. Only parameters a part doesn\'t have yet - you see everything before it\'s written, and nothing already set is changed.'} />
+                </Group>
                 {error && <Alert color="red">{error}</Alert>}
                 <Group><Button size="xs" onClick={load} loading={loading}>Work out values</Button></Group>
             </Stack>
@@ -412,11 +427,11 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
     return (
         <Stack gap="xs">
             <Group justify="space-between">
-                <Text size="xs" c="dimmed">
-                    {items.length} of {preview.parts_checked} parts have something to fill. Untick anything that's wrong
-                    - a blank is flagged by OMG's data check, a wrong value isn't.
-                </Text>
-                <Button size="xs" variant="subtle" onClick={load} loading={loading}>Work out again</Button>
+                <Group gap={6} wrap="nowrap">
+                    <Text size="xs" c="dimmed">{items.length} of {preview.parts_checked} parts have something to fill - untick anything wrong.</Text>
+                    <Help text="A blank is flagged by OMG's data check; a wrong value isn't - so check before filling." />
+                </Group>
+                <Tooltip label="Work out again"><ActionIcon variant="subtle" onClick={load} loading={loading}><IconRefresh size={16} /></ActionIcon></Tooltip>
             </Group>
             {error && <Alert color="red">{error}</Alert>}
             {result && (
@@ -434,7 +449,7 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
                         ))}
                     </div>
                     {result.errors.length === 0 && (
-                        <Text size="xs">Next: OMG's InvenTree Settings - Selection Lists - "Fill lists from parts",
+                        <Text size="xs">Next: OMG's Component Settings - Data quality - Selection Lists - "Fill lists from parts",
                             then check each list and turn it on.</Text>
                     )}
                 </Alert>
@@ -448,7 +463,7 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
                             {' '}({count} {count === 1 ? 'part' : 'parts'}) - it only allows {r.allowed.join(', ')}.
                         </Text>
                         <Text size="xs">
-                            Those values would be refused. In OMG: InvenTree Settings - Selection Lists - "Set up lists"
+                            Those values would be refused. In OMG: Component Settings - Data quality - Selection Lists - "Set up lists"
                             (it turns OMG's own lists on, which replaces the old choices), then "Work out again" here.
                         </Text>
                     </Alert>
@@ -456,7 +471,7 @@ function AutoFill({ context }: { context: InvenTreePluginContext }) {
             })}
             {preview.missing_templates.length > 0 && (
                 <Alert color="yellow">No InvenTree template yet for {preview.missing_templates.join(', ')} - those
-                    values will be skipped (OMG's InvenTree Settings page can create the templates).</Alert>
+                    values will be skipped (OMG's Component Settings page, Part parameters, can create the templates).</Alert>
             )}
             <div style={{ maxHeight: 340, overflowY: 'auto' }}>
                 <Stack gap="sm">
@@ -542,21 +557,24 @@ function NotInOmg({ context, onCount }: { context: InvenTreePluginContext; onCou
     };
     if (error) return <Alert color="red">{error}</Alert>;
     if (rows === null) return <Loader size="sm" />;
-    if (!rows.length) return <Text size="sm" c="dimmed">Every part changed here has reached OMG.</Text>;
+    if (!rows.length) return <Badge color="green" variant="light">Every part changed here has reached OMG</Badge>;
     return (
         <Stack gap="xs">
             <Group justify="space-between">
-                <Text size="sm">Changed in InvenTree - OMG not updated. Retried every few minutes.</Text>
+                <Group gap={6} wrap="nowrap">
+                    <Text size="sm">Changed here, not yet in OMG</Text>
+                    <Help text="OMG couldn't be reached when these parts changed. They're retried every few minutes - or retry now." />
+                </Group>
                 <Button size="xs" loading={busy} onClick={retry}>Retry now</Button>
             </Group>
-            {note && <Alert color="blue">{note}</Alert>}
-            <Table striped withTableBorder>
+            {note && <Alert color="blue" p="xs"><Text size="xs">{note}</Text></Alert>}
+            <Table striped withTableBorder verticalSpacing={4}>
                 <Table.Thead><Table.Tr><Table.Th>Part</Table.Th><Table.Th>Since</Table.Th><Table.Th>Why</Table.Th></Table.Tr></Table.Thead>
                 <Table.Tbody>
                     {rows.map((r) => (
                         <Table.Tr key={r.part}>
                             <Table.Td><PartLink context={context} pk={r.part} name={r.ipn || r.name} /></Table.Td>
-                            <Table.Td>{new Date(r.since).toLocaleString()}</Table.Td>
+                            <Table.Td><Text size="xs">{new Date(r.since).toLocaleString()}</Text></Table.Td>
                             <Table.Td>
                                 {r.unchecked && <Badge size="xs" color="orange" mr={4}>not checked by OMG</Badge>}
                                 <Text size="xs" span>{r.error}</Text>
@@ -570,6 +588,7 @@ function NotInOmg({ context, onCount }: { context: InvenTreePluginContext; onCou
 }
 
 function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
+    const [pending, setPending] = useState<number | null>(null);
     const [problems, setProblems] = useState<number | null>(null);
     const [waiting, setWaiting] = useState<number | null>(null);
     return (
@@ -577,7 +596,9 @@ function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
             <Text size="sm" fw={600} c={context.theme.primaryColor}>OMG Parts</Text>
             <Tabs defaultValue="pending">
                 <Tabs.List>
-                    <Tabs.Tab value="pending">Pending (Mouser)</Tabs.Tab>
+                    <Tabs.Tab value="pending" rightSection={pending ? <Badge size="xs" color="blue">{pending}</Badge> : null}>
+                        From Mouser
+                    </Tabs.Tab>
                     <Tabs.Tab value="setup" rightSection={problems ? <Badge size="xs" color="orange">{problems}</Badge> : null}>
                         Needs setup
                     </Tabs.Tab>
@@ -586,7 +607,7 @@ function OMGPartsItem({ context }: { context: InvenTreePluginContext }) {
                         Not in OMG
                     </Tabs.Tab>
                 </Tabs.List>
-                <Tabs.Panel value="pending" pt="xs"><PendingPartsItem context={context} /></Tabs.Panel>
+                <Tabs.Panel value="pending" pt="xs"><PendingPartsItem context={context} onCount={setPending} /></Tabs.Panel>
                 <Tabs.Panel value="setup" pt="xs"><NeedsSetup context={context} onCount={setProblems} /></Tabs.Panel>
                 <Tabs.Panel value="fill" pt="xs"><AutoFill context={context} /></Tabs.Panel>
                 <Tabs.Panel value="sync" pt="xs"><NotInOmg context={context} onCount={setWaiting} /></Tabs.Panel>

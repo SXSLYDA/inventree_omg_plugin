@@ -228,7 +228,7 @@ def import_pending(plugin, ids, user):
                 skipped = _set_omg_parameters(part, data, row.get("kind"))
                 result.update(status="created", part=_part_row(part),
                               message=("Some parameters weren't set: " + "; ".join(skipped)
-                                       + " - fill them in the OMG Part Setup panel.") if skipped else "")
+                                       + " - fill them in on its OMG Setup panel.") if skipped else "")
         except Exception as exc:     # one bad part mustn't stop the rest
             logger.exception("Importing OMG pending part %s failed", row["id"])
             result.update(status="failed", message=str(exc))

@@ -341,7 +341,8 @@ def _proposals(part, config, lists, current):
             values['wire.gauge_awg'] = awg_for_mm2(values['wire.gauge_mm2'], table) or ''
         if values.get('wire.gauge_awg'):
             values['wire.gauge_awg'] = normalise_awg(values['wire.gauge_awg']) or ''
-    allowed = set(_profile(config, ctype).get('required', [])) | set(_profile(config, ctype).get('optional', []))
+    profile = _profile(config, ctype)
+    allowed = set(profile.get('required', [])) | set(profile.get('optional', [])) | set(profile.get('own_pins', []))
     allowed.add('part.component_type')
     out = {}
     for role, value in values.items():

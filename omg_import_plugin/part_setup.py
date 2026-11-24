@@ -1,12 +1,12 @@
 """
-Backend for the two part panels (PartSetupPanel.tsx):
+Backend for the part's OMG Setup panel (PartSetupPanel.tsx), two of its tabs:
 
-  OMG Part Setup  - pick a Component Type (Wire, Contact, Seal, Blank,
+  Details         - pick a Component Type (Wire, Contact, Seal, Blank,
                     Connector, Multicore) and fill in every parameter that
                     type needs in one go. Gauge mm² / AWG fill each other
                     from OMG's AWG / mm² table; colours are saved as the
                     company colour list's names ("RD" -> "Red").
-  OMG Cavities    - a connector's Cavity Map as a grid (cavities, series,
+  Cavities        - a connector's Cavity Map as a grid (cavities, series,
                     sealing, max OD), plus which contacts / seals / blanks
                     are its related parts, with InvenTree's parts of each
                     series offered to add. The map is the one list of the
@@ -22,7 +22,7 @@ from OMG (/api/parts/part-profiles/), and the Cavity Map is read and written
 by OMG's own rules (/api/parts/rules/) - OMG owns the part logic, so there is
 no copy here to drift; this only reads and writes InvenTree parameters and
 related parts. Templates are never
-created here: a missing one is reported (OMG's InvenTree Settings page can
+created here: a missing one is reported (OMG's Component Settings page can
 create them).
 """
 import logging
@@ -176,6 +176,7 @@ def part_setup_state(part, config):
     for profile in profiles.values():
         wanted.update(profile.get("required", []))
         wanted.update(profile.get("optional", []))
+        wanted.update(profile.get("own_pins", []))     # a connector's own pins (solder cups / captive contacts)
     fields = {}
     for role in sorted(wanted):
         meta = roles.get(role) or {}
@@ -250,7 +251,7 @@ def save_part_setup(part, config, component_type, values):
         if template is None:
             if value:
                 errors[role] = (f"No '{_role_template(config, role)}' parameter template in InvenTree - create it "
-                                f"(OMG > InvenTree Settings > Part Parameters can) and try again.")
+                                f"(OMG > Component Settings > Part parameters can) and try again.")
             continue
         templates[role] = template
     if errors:
@@ -435,7 +436,7 @@ def _snap_series(config, rows, solder=()):
                 hint = suggest(unknown[0], choices)
                 errors.append(f"Row {i}: '{', '.join(unknown)}' isn't in the Contact Series list"
                               + (f" - did you mean '{hint}'?" if hint else "")
-                              + " (add it on OMG's InvenTree Settings page, Selection Lists).")
+                              + " (add it in OMG: Component Settings > Data quality > Selection Lists).")
             row = {**row, "series": snapped}
         out.append(row)
     return out, errors
@@ -480,7 +481,7 @@ def save_cavities(part, config, rows, related_add, related_remove):
     template = _template(_role_template(config, "connector.cavity_map"))
     if template is None:
         return [f"No '{_role_template(config, 'connector.cavity_map')}' parameter template in InvenTree - create "
-                f"it (OMG > InvenTree Settings > Part Parameters can) and try again."]
+                f"it (OMG > Component Settings > Part parameters can) and try again."]
     if len(text) > 500:
         return ["The cavity map is longer than InvenTree's 500-character parameter limit - "
                 "combine rows into ranges (e.g. 1-12)."]
@@ -493,7 +494,7 @@ def save_cavities(part, config, rows, related_add, related_remove):
     count_template = _template(_role_template(config, "connector.contact_count"))
     if count_template is None and cavity_count:
         return [f"No '{_role_template(config, 'connector.contact_count')}' parameter template in InvenTree - create "
-                f"it (OMG > InvenTree Settings > Part Parameters can) and try again."]
+                f"it (OMG > Component Settings > Part parameters can) and try again."]
     try:
         with transaction.atomic():
             _set_parameter(part, template, text)

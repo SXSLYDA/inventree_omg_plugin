@@ -82,7 +82,7 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
         "OMG_HARNESS_API_TOKEN": {
             "name": "OMG InvenTree User Token",
             "description": "Lets this plugin search and pull harness designs from your OMG Harness "
-                            "account. Generate this on OMG's own InvenTree Settings page and paste it "
+                            "account. Generate it in OMG: Component Settings > InvenTree connection > Service account token, and paste it "
                             "here. This is a different credential from the InvenTree Webhook Token "
                             "below — they're not interchangeable, so don't paste one where the other "
                             "goes.",
@@ -93,7 +93,7 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
             "name": "InvenTree Webhook Token",
             "description": "Lets OMG know it's really this plugin reporting back after an import — "
                             "which parts matched, and which need a person to look at them. Copy this "
-                            "exact value from OMG's own InvenTree Settings page (it's generated "
+                            "exact value from OMG: Component Settings > InvenTree connection > Webhook token (it's generated "
                             "automatically there, not something you make up yourself). Different "
                             "credential from the OMG InvenTree User Token above — copying the wrong "
                             "one here will make imports work fine but reports back to OMG silently "
@@ -206,23 +206,6 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
         from .change_check import check_delete
         check_delete(instance)
 
-    def _is_connector(self, part):
-        """Component Type = Connector (OMG's template name), or it already has a cavity map."""
-        from .inventree_native_lookup import get_part_parameter_str
-        from .part_setup import _config_cache
-        roles = ((_config_cache.get("data") or {}).get("roles") or {})
-        type_name = (roles.get("part.component_type") or {}).get("template") or "Component Type"
-        if (get_part_parameter_str(part, type_name) or "").strip().lower() == "connector":
-            return True
-        map_name = (roles.get("connector.cavity_map") or {}).get("template") or "Cavity Map"
-        return bool(get_part_parameter_str(part, map_name))
-
-    def _is_accessory(self, part):
-        """Component Type is an accessory kind - Lock, Secondary Lock, Boot, Cap, Backshell, Holding Plate, Hardware."""
-        from .accessory_setup import is_accessory_part
-        from .part_setup import _config_cache
-        return is_accessory_part(part, _config_cache.get("data") or {})
-
     def setup_urls(self):
         from . import api
         return api.urlpatterns
@@ -319,36 +302,17 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
         if not part:
             return panels
 
-        # "OMG Part Setup" on every non-assembly part (wires, connectors,
-        # contacts, seals, blanks): pick a Component Type, fill in what it
-        # needs. "OMG Cavities" on connectors - Component Type is read from
-        # the part with OMG's template name (cached; falls back to showing
-        # it whenever the part has a Cavity Map parameter).
+        # "OMG Setup" on every non-assembly part (wires, connectors, contacts, seals, blanks, accessories):
+        # one panel with tabs - Details (Component Type and what OMG needs), Cavities (connectors) and
+        # Accessories / Fits (connectors and accessories). The panel decides its tabs from the part's
+        # saved type, so a type saved there shows its tabs straight away.
         if not part.assembly:
             panels.append({
                 "key": "omg-part-setup",
-                "title": "OMG Part Setup",
+                "title": "OMG Setup",
                 "icon": "ti:list-check:outline",
                 "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGPartSetupPanel"),
             })
-            is_connector = self._is_connector(part)
-            if is_connector:
-                panels.append({
-                    "key": "omg-cavities",
-                    "title": "OMG Cavities",
-                    "icon": "ti:grid-dots:outline",
-                    "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGCavityPanel"),
-                })
-            # "OMG Accessories": on a connector, which locks / boots / covers
-            # fit and which are required; on a lock, boot... which
-            # connectors it fits (accessory_setup.py).
-            if is_connector or self._is_accessory(part):
-                panels.append({
-                    "key": "omg-accessories",
-                    "title": "OMG Accessories",
-                    "icon": "ti:lock:outline",
-                    "source": self.plugin_static_file("PartSetupPanel.js:RenderOMGAccessoryPanel"),
-                })
 
         is_omg_harness = (get_part_parameter_str(part, HARNESS_MARKER_PARAM) or "").strip().lower() == "true"
 

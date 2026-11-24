@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Badge, Button, Group, Select, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Badge, Button, Card, Group, HoverCard, Loader, Select, Stack, Text, TextInput, Title } from '@mantine/core';
+import { IconCheck, IconFileImport, IconSearch, IconX } from '@tabler/icons-react';
 
 import { checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
 
@@ -54,8 +55,6 @@ interface HarnessSearchResult {
     id: number;
     part_number: string;
     description: string;
-    layout_status: number;
-    diagram_status: number;
 }
 
 interface CategoryOption {
@@ -207,150 +206,120 @@ function OMGImportHarnessDashboardItem({ context }: { context: InvenTreePluginCo
         }
     }, [categoryPk, context.api]);
 
+    const checks = credentialStatus ? ([
+        ['OMG URL', credentialStatus.omg_harness_api_url],
+        ['OMG User Token', credentialStatus.omg_inventree_user_token],
+        ['Webhook Token', credentialStatus.inventree_webhook_token],
+        ['Mouser Key', credentialStatus.mouser_api_key],
+        // Gauge mm2 <-> AWG fill-in needs both of these
+        ...(credentialStatus.event_integration === undefined ? [] : [
+            ['Event Integration', !!credentialStatus.event_integration],
+            ['Background Worker', !!credentialStatus.background_worker],
+        ]),
+    ] as [string, boolean][]) : [];
+    const missing = checks.filter(([, ok]) => !ok);
+
     return (
         <Stack gap="sm">
-            <Group gap={8} wrap="nowrap">
-                {/*
-                  Inline SVG rather than pulling in @tabler/icons-react -
-                  that package isn't a dependency of this panel yet, and
-                  adding it means editing package.json plus an npm
-                  install as part of the next build, more risk than
-                  wanted right before a rebuild+redeploy. A simple
-                  file-import glyph, close to Tabler's own "file-import"
-                  icon used in this item's own core.py declaration
-                  (which only affects the dashboard's "add widget"
-                  picker, not this widget's own rendered content - hence
-                  showing no icon at all before this fix, confirmed
-                  directly from a screenshot of the actual rendering).
-                */}
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={context.theme.colors[context.theme.primaryColor][6]} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M14 3v4a1 1 0 0 0 1 1h4" />
-                    <path d="M5 12v-7a2 2 0 0 1 2 -2h7l5 5v4" />
-                    <path d="M5 15l4 4" />
-                    <path d="M5 19l4 -4" />
-                </svg>
-                {/*
-                  c={context.theme.primaryColor} rather than a hardcoded
-                  "blue"/"indigo" - matches whatever theme color is
-                  actually active on this InvenTree instance (confirmed
-                  from a screenshot: every native dashboard item's own
-                  title uses this same accent color, plain black here
-                  was the actual visible mismatch against them, not a
-                  missing title - removing the title entirely, tried
-                  briefly on the assumption the dashboard grid already
-                  showed one of its own, was confirmed wrong from that
-                  same screenshot: the title only ever appeared once).
-                */}
-                <Title order={4} c={context.theme.primaryColor}>Import harness from OMG</Title>
-            </Group>
-            <Text size="sm" c="dimmed">
-                Search OMG's harness part numbers, then import — creates the
-                harness's InvenTree part if it doesn't exist yet, or updates
-                its BOM if it does.
-            </Text>
-
-            {credentialStatus && (
-                <Group gap="md">
-                    {([
-                        ['OMG URL', credentialStatus.omg_harness_api_url],
-                        ['OMG User Token', credentialStatus.omg_inventree_user_token],
-                        ['Webhook Token', credentialStatus.inventree_webhook_token],
-                        ['Mouser Key', credentialStatus.mouser_api_key],
-                        // Gauge mm2 <-> AWG fill-in needs both of these
-                        ...(credentialStatus.event_integration === undefined ? [] : [
-                            ['Event Integration', !!credentialStatus.event_integration],
-                            ['Background Worker', !!credentialStatus.background_worker],
-                        ]),
-                    ] as [string, boolean][]).map(([label, configured]) => (
-                        <Badge
-                            key={label}
-                            size="sm"
-                            variant="light"
-                            color={configured ? 'green' : 'red'}
-                            leftSection={configured ? '✓' : '✗'}
-                        >
-                            {label}
-                        </Badge>
-                    ))}
+            <Group justify="space-between" wrap="nowrap">
+                <Group gap={8} wrap="nowrap">
+                    <IconFileImport size={20} color={context.theme.colors[context.theme.primaryColor][6]} />
+                    {/* the theme's accent colour, like InvenTree's own dashboard item titles */}
+                    <Title order={4} c={context.theme.primaryColor}>Import harness from OMG</Title>
                 </Group>
-            )}
+                {/* The plugin's settings: one badge while all is well, the
+                    missing ones by name when not - hover for the full list */}
+                {checks.length > 0 && (
+                    <HoverCard withArrow position="bottom-end">
+                        <HoverCard.Target>
+                            {missing.length
+                                ? <Badge color="red" variant="light" leftSection={<IconX size={12} />}>{missing.map(([l]) => l).join(', ')} not set</Badge>
+                                : <Badge color="green" variant="light" leftSection={<IconCheck size={12} />}>Settings OK</Badge>}
+                        </HoverCard.Target>
+                        <HoverCard.Dropdown>
+                            <Stack gap={4}>
+                                {checks.map(([label, ok]) => (
+                                    <Group key={label} gap={6}>
+                                        {ok ? <IconCheck size={14} color="var(--mantine-color-green-6)" /> : <IconX size={14} color="var(--mantine-color-red-6)" />}
+                                        <Text size="xs">{label}</Text>
+                                    </Group>
+                                ))}
+                            </Stack>
+                        </HoverCard.Dropdown>
+                    </HoverCard>
+                )}
+            </Group>
 
-            <Group gap="xs" align="flex-end">
+            <Group gap="xs">
                 <TextInput
-                    label="Search"
-                    placeholder="e.g. R1300G"
+                    placeholder="OMG harness part number, e.g. R1300G"
+                    leftSection={<IconSearch size={16} />}
                     value={query}
                     onChange={(e) => setQuery(e.currentTarget.value)}
                     onKeyDown={(e) => e.key === 'Enter' && runSearch()}
                     style={{ flex: 1 }}
                 />
-                <Select
-                    label="Category"
-                    description="Only needed if this harness doesn't exist in InvenTree yet"
-                    placeholder="Type to search categories"
-                    searchable
-                    clearable
-                    searchValue={categorySearchTerm}
-                    onSearchChange={setCategorySearchTerm}
-                    data={categoryOptions}
-                    value={categoryPk === '' ? null : String(categoryPk)}
-                    onChange={(v) => setCategoryPk(v ? Number(v) : '')}
-                    nothingFoundMessage={categorySearching ? 'Searching…' : 'Type at least 2 characters'}
-                    style={{ width: 280 }}
-                />
-                <Button onClick={runSearch} loading={searching}>Search</Button>
+                <Button onClick={runSearch} loading={searching}>Search OMG</Button>
             </Group>
 
-            {searchError && <Alert color="orange">{searchError}</Alert>}
+            {searchError && <Alert color="orange" p="xs"><Text size="sm">{searchError}</Text></Alert>}
             {importingPartNumber && importProgress && (
-                <Text size="sm" c="dimmed">{importingPartNumber}: {importProgress}</Text>
+                <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">{importingPartNumber}: {importProgress}</Text></Group>
             )}
             {importMessage && (
-                <Alert color={importMessage.isError ? 'red' : 'green'}>
-                    <Stack gap={6}>
+                <Alert color={importMessage.isError ? 'red' : 'green'} p="xs">
+                    <Group justify="space-between" wrap="nowrap">
                         <Text size="sm">{importMessage.text}</Text>
                         {importMessage.partPk !== undefined && (
-                            <Group>
-                                <Button
-                                    size="xs"
-                                    variant="light"
-                                    onClick={() => context.navigate(`/part/${importMessage.partPk}/omg-harness-sync`)}
-                                >
-                                    Review in InvenTree
-                                </Button>
-                            </Group>
+                            <Button size="xs" variant="light"
+                                onClick={() => context.navigate(`/part/${importMessage.partPk}/omg-harness-sync`)}>
+                                Open harness
+                            </Button>
                         )}
-                    </Stack>
+                    </Group>
                 </Alert>
             )}
 
             {hasSearched && !searching && !searchError && results.length === 0 && (
-                <Text size="sm" c="dimmed">No matching harnesses found in OMG for "{query}".</Text>
+                <Text size="sm" c="dimmed">No harness in OMG matches "{query}".</Text>
             )}
 
             {results.length > 0 && (
-                <Stack gap={6} style={{ maxHeight: 220, overflowY: 'auto' }}>
-                    {results.map((r) => (
-                        <Group key={r.id} justify="space-between" wrap="nowrap"
-                               style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 4, padding: '8px 12px' }}>
-                            <div>
-                                <Group gap={6}>
-                                    <Text fw={500} size="sm">{r.part_number}</Text>
-                                    {r.diagram_status !== undefined && <Badge size="xs" variant="light">diagram {r.diagram_status}</Badge>}
+                <>
+                    <Stack gap={6} style={{ maxHeight: 240, overflowY: 'auto' }}>
+                        {results.map((r) => (
+                            <Card key={r.id} withBorder radius="md" padding="xs">
+                                <Group justify="space-between" wrap="nowrap">
+                                    <div>
+                                        <Text fw={600} size="sm">{r.part_number}</Text>
+                                        <Text size="xs" c="dimmed">{r.description}</Text>
+                                    </div>
+                                    <Button size="xs" variant="light"
+                                        loading={importingPartNumber === r.part_number}
+                                        disabled={!!importingPartNumber && importingPartNumber !== r.part_number}
+                                        onClick={() => importHarness(r.part_number)}>
+                                        Import
+                                    </Button>
                                 </Group>
-                                <Text size="xs" c="dimmed">{r.description}</Text>
-                            </div>
-                            <Button
-                                size="xs"
-                                variant="outline"
-                                loading={importingPartNumber === r.part_number}
-                                onClick={() => importHarness(r.part_number)}
-                            >
-                                Import
-                            </Button>
-                        </Group>
-                    ))}
-                </Stack>
+                            </Card>
+                        ))}
+                    </Stack>
+                    {/* only matters for a harness InvenTree doesn't have yet */}
+                    <Select
+                        size="xs"
+                        label="Category for a new harness part"
+                        placeholder="Type to search categories (optional)"
+                        searchable
+                        clearable
+                        searchValue={categorySearchTerm}
+                        onSearchChange={setCategorySearchTerm}
+                        data={categoryOptions}
+                        value={categoryPk === '' ? null : String(categoryPk)}
+                        onChange={(v) => setCategoryPk(v ? Number(v) : '')}
+                        nothingFoundMessage={categorySearching ? 'Searching…' : 'Type at least 2 characters'}
+                        maw={360}
+                    />
+                </>
             )}
         </Stack>
     );

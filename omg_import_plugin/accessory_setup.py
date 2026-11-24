@@ -1,5 +1,5 @@
 """
-Backend for the "OMG Accessories" panel (PartSetupPanel.tsx) - locks,
+Backend for the Accessories tab of the part's OMG Setup panel (PartSetupPanel.tsx) - locks,
 boots, covers... matched to connectors by Connector Series / Side / Ways.
 
 OMG owns the matching rules (its components/accessory_rules.py) - this
@@ -61,7 +61,7 @@ def save_connector_accessories(part, config, kinds, link_related=True):
         template = _template(name) if name else None
         if template is None:
             return None, [f"No '{name or role}' parameter template in InvenTree - create it "
-                          f"(OMG > InvenTree Settings > Part Parameters can) and try again."]
+                          f"(OMG > Component Settings > Part parameters can) and try again."]
         templates[key] = template
     try:
         with transaction.atomic():

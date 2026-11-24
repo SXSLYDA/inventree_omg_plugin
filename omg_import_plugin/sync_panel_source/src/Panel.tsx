@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Alert, Anchor, Badge, Button, Group, Stack, Table, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Anchor, Badge, Button, Card, Group, Loader, Menu, Paper, SimpleGrid, Stack, Text, TextInput, ThemeIcon, Title, Tooltip, UnstyledButton } from '@mantine/core';
+import { IconChevronDown, IconExternalLink, IconInfoCircle, IconLink, IconRefresh, IconSearch, IconTopologyStar3 } from '@tabler/icons-react';
 import { notifications } from '@mantine/notifications';
 
 import { ApiEndpoints, checkPluginVersion, type InvenTreePluginContext } from '@inventreedb/ui';
@@ -136,12 +137,12 @@ function reviewSortKey(item: UnresolvedItem): string {
 function fixPanel(notes: string): { panel: string; label: string } {
     const text = notes.toLowerCase();
     if (/(choose one of|needs a |accessor|doesn't fit|does not fit|lock|boot|backshell|cover)/.test(text)) {
-        return { panel: 'omg-part-setup', label: 'Choose it on the part (Preferred Accessories)' };
+        return { panel: 'omg-part-setup?tab=accessories', label: 'Choose it on the part (Accessories)' };
     }
     if (/(related part|contact|blank|seal|cavity|series|gold)/.test(text)) {
-        return { panel: 'omg-cavities', label: 'Fix related parts / cavities' };
+        return { panel: 'omg-part-setup?tab=cavities', label: 'Fix its cavities / related parts' };
     }
-    return { panel: 'omg-part-setup', label: 'Open part setup' };
+    return { panel: 'omg-part-setup', label: 'Open its OMG Setup' };
 }
 
 const PLUGIN_SLUG = 'omg-harness-import';
@@ -272,80 +273,74 @@ function ReviewItem({ item, context, onChanged }: {
         },
     });
 
+    const replaceActions = item.omg_object_type && (!setupProblem || showReplace);
     return (
-        <Alert color={pending ? 'blue' : 'yellow'} title={reviewTitle(item)}>
+        <Card withBorder radius="md" padding="sm" style={{ borderLeft: `4px solid var(--mantine-color-${pending ? 'blue' : 'yellow'}-5)` }}>
             <Stack gap={6}>
-                <Text size="sm">{item.notes}</Text>
-
-                {omg && (omg.part_no || omg.description) && (
-                    <Text size="xs" c="dimmed">
-                        In OMG: {omg.part_no ? <b>{omg.part_no}</b> : 'no part number'}
-                        {omg.description ? ` — ${omg.description}` : ''}
-                    </Text>
-                )}
-
-                {pending && (
-                    <Group gap="xs">
-                        <Badge color="blue" variant="light">Mouser pending part</Badge>
-                        <Text size="xs"><b>{pending.mpn}</b>{pending.manufacturer ? ` (${pending.manufacturer})` : ''}</Text>
-                        {pending.url && <Anchor size="xs" href={pending.url} target="_blank">View on Mouser</Anchor>}
-                    </Group>
-                )}
-
-                {item.candidates.length > 0 && (
-                    <Group gap="xs">
-                        {item.candidates.map((c) => (
-                            <Button key={c.pk} size="xs" variant="outline" loading={busy}
-                                    onClick={() => resolve('link', c.pk)}>
+                <Group justify="space-between" align="flex-start" wrap="nowrap">
+                    <Stack gap={2} style={{ minWidth: 0 }}>
+                        <Group gap="xs">
+                            <Text fw={600} size="sm">{reviewTitle(item)}</Text>
+                            {omg?.part_no && <Text size="xs" c="dimmed">{omg.part_no}{omg.description ? ` · ${omg.description}` : ''}</Text>}
+                        </Group>
+                        <Text size="sm">{item.notes}</Text>
+                        {pending && (
+                            <Group gap="xs">
+                                <Badge size="sm" color="blue" variant="light">Picked from Mouser in OMG</Badge>
+                                <Text size="xs"><b>{pending.mpn}</b>{pending.manufacturer ? ` (${pending.manufacturer})` : ''}</Text>
+                                {pending.url && <Anchor size="xs" href={pending.url} target="_blank">View on Mouser</Anchor>}
+                            </Group>
+                        )}
+                    </Stack>
+                    <Group gap="xs" wrap="nowrap">
+                        {setupProblem && (
+                            <Button size="xs" onClick={() => openPart(fix.panel)}>{fix.label}</Button>
+                        )}
+                        {item.candidates.slice(0, 2).map((c) => (
+                            <Button key={c.pk} size="xs" variant="light" loading={busy} onClick={() => resolve('link', c.pk)}>
                                 Use {c.name || c.ipn}
                             </Button>
                         ))}
-                    </Group>
-                )}
-
-                {setupProblem && (
-                    <Group gap="xs">
-                        <Button size="xs" variant="filled" onClick={() => openPart(fix.panel)}>
-                            {fix.label}
-                        </Button>
-                        {fix.panel !== 'omg-part-setup' && (
-                            <Button size="xs" variant="light" onClick={() => openPart('omg-part-setup')}>
-                                Open part setup
+                        {replaceActions && !item.candidates.length && (
+                            <Button size="xs" variant="light" onClick={() => setWizardOpen(true)}>
+                                Import from Mouser
                             </Button>
                         )}
-                        <Button size="xs" variant="subtle" onClick={() => setShowReplace(!showReplace)}>
-                            {showReplace ? 'Hide replace options' : 'Use a different part...'}
-                        </Button>
+                        <Menu position="bottom-end" withinPortal>
+                            <Menu.Target>
+                                <Button size="xs" variant="default" rightSection={<IconChevronDown size={14} />}>More</Button>
+                            </Menu.Target>
+                            <Menu.Dropdown>
+                                {item.candidates.slice(2).map((c) => (
+                                    <Menu.Item key={c.pk} onClick={() => resolve('link', c.pk)}>Use {c.name || c.ipn}</Menu.Item>
+                                ))}
+                                {setupProblem && fix.panel !== 'omg-part-setup' && (
+                                    <Menu.Item onClick={() => openPart('omg-part-setup')}>Open its OMG Setup</Menu.Item>
+                                )}
+                                {setupProblem && (
+                                    <Menu.Item onClick={() => setShowReplace(!showReplace)}>
+                                        {showReplace ? 'Keep this part' : 'Use a different part...'}</Menu.Item>
+                                )}
+                                {replaceActions && (
+                                    <>
+                                        {item.candidates.length > 0 && <Menu.Item onClick={() => setWizardOpen(true)}>Import from Mouser</Menu.Item>}
+                                        <Menu.Item onClick={() => setMode(mode === 'search' ? 'none' : 'search')}>Search InvenTree</Menu.Item>
+                                        <Menu.Item onClick={() => createPartForm.open()}>Create part by hand</Menu.Item>
+                                    </>
+                                )}
+                                <Menu.Divider />
+                                <Menu.Item color="gray" onClick={() => resolve('dismiss')}>Dismiss</Menu.Item>
+                            </Menu.Dropdown>
+                        </Menu>
                     </Group>
-                )}
-
-                <Group gap="xs">
-                    {item.omg_object_type && (!setupProblem || showReplace) && (
-                        <>
-                            <Button size="xs" variant="light" onClick={() => setWizardOpen(true)}>
-                                {pending ? 'Import pending part from Mouser' : 'Import from Mouser'}
-                            </Button>
-                            <Button size="xs" variant={mode === 'search' ? 'filled' : 'light'}
-                                    onClick={() => setMode(mode === 'search' ? 'none' : 'search')}>
-                                Search InvenTree
-                            </Button>
-                            <Button size="xs" variant="light" onClick={() => createPartForm.open()}>
-                                Create part
-                            </Button>
-                        </>
-                    )}
-                    <Button size="xs" variant="subtle" color="gray" loading={busy} onClick={() => resolve('dismiss')}>
-                        Dismiss
-                    </Button>
                 </Group>
 
                 {mode === 'search' && (
                     <Stack gap={6}>
                         <Group gap="xs" align="flex-end">
-                            <TextInput size="xs" label="Search InvenTree parts" value={term}
-                                       onChange={(e) => setTerm(e.currentTarget.value)}
-                                       onKeyDown={(e) => e.key === 'Enter' && searchInvenTree()}
-                                       style={{ flex: 1 }} />
+                            <TextInput size="xs" placeholder="Search InvenTree parts" value={term} leftSection={<IconSearch size={14} />}
+                                onChange={(e) => setTerm(e.currentTarget.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && searchInvenTree()} style={{ flex: 1 }} />
                             <Button size="xs" onClick={searchInvenTree} loading={busy}>Search</Button>
                         </Group>
                         {partResults !== null && partResults.length === 0 && (
@@ -353,10 +348,8 @@ function ReviewItem({ item, context, onChanged }: {
                         )}
                         {(partResults || []).map((p) => (
                             <Group key={p.pk} justify="space-between" wrap="nowrap">
-                                <Text size="xs"><b>{p.name}</b>{p.IPN ? ` [${p.IPN}]` : ''} — {p.description}</Text>
-                                <Button size="xs" variant="outline" loading={busy} onClick={() => resolve('link', p.pk)}>
-                                    Use this part
-                                </Button>
+                                <Text size="xs"><b>{p.name}</b>{p.IPN ? ` [${p.IPN}]` : ''} - {p.description}</Text>
+                                <Button size="xs" variant="light" loading={busy} onClick={() => resolve('link', p.pk)}>Use this part</Button>
                             </Group>
                         ))}
                     </Stack>
@@ -366,7 +359,7 @@ function ReviewItem({ item, context, onChanged }: {
                 <SupplierImportWizard
                     context={context}
                     opened={wizardOpen}
-                    title={`Import Supplier Part — ${reviewTitle(item)}`}
+                    title={`Import Supplier Part - ${reviewTitle(item)}`}
                     preferredSupplier={SUPPLIER_SLUG}
                     initialTerm={pending ? (pending.spn || pending.mpn) : (omg?.part_no || '')}
                     onImported={(result) => setImportedPartPk(result.part_id)}
@@ -387,19 +380,26 @@ function ReviewItem({ item, context, onChanged }: {
                         {createdPartPk && (
                             <Group gap="xs" mt={4}>
                                 <Text size="xs">The part was created in InvenTree (#{createdPartPk}) but isn't linked yet.</Text>
-                                <Button size="xs" variant="subtle" onClick={() => context.navigate(`/part/${createdPartPk}/`)}>
-                                    Open part
-                                </Button>
-                                <Button size="xs" variant="subtle" onClick={() => resolve('created', createdPartPk)}>
-                                    Try linking again
-                                </Button>
+                                <Button size="xs" variant="subtle" onClick={() => context.navigate(`/part/${createdPartPk}/`)}>Open part</Button>
+                                <Button size="xs" variant="subtle" onClick={() => resolve('created', createdPartPk)}>Try linking again</Button>
                             </Group>
                         )}
                     </Alert>
                 )}
             </Stack>
-        </Alert>
+        </Card>
     );
+}
+
+// A number with a label - the last sync at a glance
+function Stat({ label, value, color, onClick }: { label: string; value: number; color: string; onClick?: () => void }) {
+    const body = (
+        <Paper withBorder radius="md" p="sm">
+            <Text size="xs" c="dimmed" tt="uppercase" fw={700}>{label}</Text>
+            <Text size="xl" fw={700} c={color}>{value}</Text>
+        </Paper>
+    );
+    return onClick ? <UnstyledButton onClick={onClick}>{body}</UnstyledButton> : body;
 }
 
 interface HarnessSearchResult {
@@ -635,58 +635,55 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
 
 
     if (loadingStatus) {
-        return <Text size="sm" c="dimmed">Checking OMG link status…</Text>;
+        return <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">Checking the link to OMG…</Text></Group>;
     }
+
+    const header = (title: string, sub: React.ReactNode, actions?: React.ReactNode) => (
+        <Group justify="space-between" align="flex-start" wrap="nowrap">
+            <Group gap="md" wrap="nowrap">
+                <ThemeIcon size={50} radius="md" variant="light" color={isLinked ? 'indigo' : 'gray'}>
+                    {isLinked ? <IconTopologyStar3 size={28} /> : <IconLink size={28} />}</ThemeIcon>
+                <Stack gap={2}>
+                    <Title order={4}>{title}</Title>
+                    {sub}
+                </Stack>
+            </Group>
+            {actions}
+        </Group>
+    );
 
     if (!isLinked) {
         return (
-            <Stack gap="sm">
-                <Title order={4}>Link to OMG</Title>
-                <Text size="sm" c="dimmed">
-                    This part isn't linked to an OMG Harness design yet.
-                    Search OMG's harness part numbers below and link this
-                    exact part to one — its BOM imports immediately once
-                    linked.
-                </Text>
-
-                <Group gap="xs" align="flex-end">
-                    <TextInput
-                        label="Search OMG"
-                        placeholder="e.g. R1300G"
-                        value={query}
-                        onChange={(e) => setQuery(e.currentTarget.value)}
-                        onKeyDown={(e) => e.key === 'Enter' && runSearch()}
-                        style={{ flex: 1 }}
-                    />
-                    <Button onClick={runSearch} loading={searching}>Search</Button>
+            <Stack gap="md">
+                {header('Link to OMG', <Text size="sm" c="dimmed">Pick the OMG harness this part is - its BOM is imported straight away.</Text>)}
+                <Group gap="xs">
+                    <TextInput placeholder="OMG harness part number, e.g. R1300G" value={query} leftSection={<IconSearch size={16} />}
+                        onChange={(e) => setQuery(e.currentTarget.value)} onKeyDown={(e) => e.key === 'Enter' && runSearch()}
+                        style={{ flex: 1 }} />
+                    <Button onClick={runSearch} loading={searching}>Search OMG</Button>
                 </Group>
-
                 {searchError && <Alert color="orange">{searchError}</Alert>}
-                {linkingPartNumber && syncProgress && <Text size="sm" c="dimmed">{syncProgress}</Text>}
-                {error && <Alert color="red" title="Link issue">{error}</Alert>}
-
-                {hasSearched && !searching && !searchError && results.length === 0 && (
-                    <Text size="sm" c="dimmed">No matching harnesses found in OMG for "{query}".</Text>
+                {linkingPartNumber && syncProgress && (
+                    <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">{syncProgress}</Text></Group>
                 )}
-
+                {error && <Alert color="red" title="Couldn't link">{error}</Alert>}
+                {hasSearched && !searching && !searchError && results.length === 0 && (
+                    <Text size="sm" c="dimmed">No harness in OMG matches "{query}".</Text>
+                )}
                 {results.length > 0 && (
                     <Stack gap={6}>
                         {results.map((r) => (
-                            <Group key={r.id} justify="space-between" wrap="nowrap"
-                                   style={{ border: '1px solid var(--mantine-color-gray-3)', borderRadius: 4, padding: '8px 12px' }}>
-                                <div>
-                                    <Text fw={500} size="sm">{r.part_number}</Text>
-                                    <Text size="xs" c="dimmed">{r.description}</Text>
-                                </div>
-                                <Button
-                                    size="xs"
-                                    variant="outline"
-                                    loading={linkingPartNumber === r.part_number}
-                                    onClick={() => linkHarness(r.part_number)}
-                                >
-                                    Link &amp; import
-                                </Button>
-                            </Group>
+                            <Card key={r.id} withBorder radius="md" padding="sm">
+                                <Group justify="space-between" wrap="nowrap">
+                                    <div>
+                                        <Text fw={600} size="sm">{r.part_number}</Text>
+                                        <Text size="xs" c="dimmed">{r.description}</Text>
+                                    </div>
+                                    <Button size="xs" loading={linkingPartNumber === r.part_number}
+                                        disabled={!!linkingPartNumber && linkingPartNumber !== r.part_number}
+                                        onClick={() => linkHarness(r.part_number)}>Link &amp; import</Button>
+                                </Group>
+                            </Card>
                         ))}
                     </Stack>
                 )}
@@ -694,80 +691,58 @@ function OMGHarnessSyncPanel({ context }: { context: InvenTreePluginContext }) {
         );
     }
 
+    const flagged = queue.length;
     return (
-        <Stack gap="sm">
-            <Title order={4}>Sync with OMG</Title>
-            <Text size="sm" c="dimmed">
-                Pulls this harness's current design from OMG Harness and
-                updates its BOM here — connectors, conductors, and
-                multicore cables. Safe to run again any time the design
-                changes in OMG; quantities update, nothing is deleted
-                without being flagged for review first.
-            </Text>
+        <Stack gap="md">
+            {header('OMG Harness',
+                <Group gap={6}>
+                    <Text size="sm" c="dimmed">{lastBatch ? `Last synced ${new Date(lastBatch.created_at).toLocaleString()}` : 'Not synced with OMG yet'}</Text>
+                    <Tooltip multiline w={300} withArrow label="Sync pulls this harness's design from OMG and updates its BOM here - connectors, wires, multicores, accessories. Safe to run any time: quantities update and nothing is removed without being listed for review.">
+                        <IconInfoCircle size={14} style={{ color: 'var(--mantine-color-gray-5)' }} />
+                    </Tooltip>
+                </Group>,
+                <Group gap="xs" wrap="nowrap">
+                    <Button leftSection={<IconRefresh size={16} />} onClick={runSync} loading={syncing}>{lastBatch ? 'Sync now' : 'Import from OMG'}</Button>
+                    <Button variant="light" rightSection={<IconExternalLink size={14} />} onClick={workOnInOmg}>Open in OMG</Button>
+                </Group>)}
 
-            <Group>
-                <Button onClick={runSync} loading={syncing}>
-                    {lastBatch ? 'Sync now' : 'Import from OMG'}
-                </Button>
-                <Button variant="light" onClick={workOnInOmg}>
-                    Work on in OMG
-                </Button>
-                {lastBatch && !loadingStatus && (
-                    <Text size="xs" c="dimmed">
-                        Last synced {new Date(lastBatch.created_at).toLocaleString()}
-                    </Text>
-                )}
-            </Group>
-
-            {syncing && syncProgress && <Text size="sm" c="dimmed">{syncProgress}</Text>}
-            {error && <Alert color="red" title="Sync issue">{error}</Alert>}
+            {syncing && (
+                <Paper withBorder radius="md" p="sm" bg="var(--mantine-color-indigo-0)">
+                    <Group gap="xs"><Loader size="xs" /><Text size="sm">{syncProgress || 'Syncing…'}</Text></Group>
+                </Paper>
+            )}
+            {error && <Alert color="red" title="Sync problem">{error}</Alert>}
 
             {lastBatch && (
-                <Table>
-                    <Table.Tbody>
-                        <Table.Tr>
-                            <Table.Td>Total items</Table.Td>
-                            <Table.Td>{lastBatch.total_items}</Table.Td>
-                        </Table.Tr>
-                        <Table.Tr>
-                            <Table.Td>Matched</Table.Td>
-                            <Table.Td><Badge color="green">{lastBatch.matched_items}</Badge></Table.Td>
-                        </Table.Tr>
-                        <Table.Tr>
-                            <Table.Td>Needs review</Table.Td>
-                            <Table.Td>
-                                <Badge color={lastBatch.flagged_items > 0 ? 'yellow' : 'gray'}>
-                                    {lastBatch.flagged_items}
-                                </Badge>
-                            </Table.Td>
-                        </Table.Tr>
-                    </Table.Tbody>
-                </Table>
+                <SimpleGrid cols={3} spacing="sm">
+                    <Stat label="BOM lines" value={lastBatch.total_items} color="dark" />
+                    <Stat label="Matched" value={lastBatch.matched_items} color="green.7" />
+                    <Stat label="Needs review" value={flagged} color={flagged ? 'orange.7' : 'gray.6'}
+                        onClick={flagged ? () => document.getElementById('omg-review')?.scrollIntoView({ behavior: 'smooth' }) : undefined} />
+                </SimpleGrid>
+            )}
+            {lastBatch && !flagged && (
+                <Group gap={6}><Badge color="green" variant="light">Everything matched</Badge>
+                    <Text size="xs" c="dimmed">Nothing to review.</Text></Group>
             )}
 
-            {!lastBatch && !loadingStatus && (
-                <Text size="sm" c="dimmed">Not synced with OMG yet.</Text>
-            )}
-
-            {queue.length > 0 && (
-                <>
-                    <Title order={5} mt="md">Needs review</Title>
+            {flagged > 0 && (
+                <Stack gap="sm" id="omg-review">
+                    <Title order={5}>Needs review</Title>
                     {queueContextError && <Alert color="orange">{queueContextError}</Alert>}
-                    <Stack gap="md">
-                        {groupedQueue.map((group) => (
-                            <Stack key={group.key} gap="xs">
-                                <Group gap="xs">
-                                    <Title order={6}>{group.title}</Title>
-                                    <Badge size="sm" variant="light" color="yellow">{group.items.length}</Badge>
-                                </Group>
-                                {group.items.map((item) => (
-                                    <ReviewItem key={item.id} item={item} context={context}
-                                                onChanged={async () => { await loadQueue(); await loadStatus(); }} />
-                                ))}
-                            </Stack>
-                        ))}
-                    </Stack>
-                </>
+                    {groupedQueue.map((group) => (
+                        <Stack key={group.key} gap="xs">
+                            <Group gap="xs">
+                                <Text size="xs" fw={700} c="dimmed" tt="uppercase">{group.title}</Text>
+                                <Badge size="sm" variant="light" color="yellow">{group.items.length}</Badge>
+                            </Group>
+                            {group.items.map((item) => (
+                                <ReviewItem key={item.id} item={item} context={context}
+                                    onChanged={async () => { await loadQueue(); await loadStatus(); }} />
+                            ))}
+                        </Stack>
+                    ))}
+                </Stack>
             )}
         </Stack>
     );
