@@ -8,7 +8,7 @@ the size ("16 AWG" -> "16"), and validate_gauge_value() refuses an AWG that
 isn't a standard size (40..1, 1/0..4/0) or a mm² that isn't a number.
 
 Parameter names and the AWG <-> mm² table come from OMG
-(/api/parts/wire-parameters/, OMG > InvenTree Settings > Part Parameters),
+(/api/parts/wire-parameters/, OMG > Component Settings > Part parameters),
 cached for NAMES_TTL; the built-in copies below are used if OMG can't be
 reached. Driven by InvenTree's own model events (EventMixin), so it works
 however the parameter was saved - the part page, the API, an import

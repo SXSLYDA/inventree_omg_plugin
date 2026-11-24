@@ -6,6 +6,10 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.14 — 2026-11-24
+
+- No notes.
+
 ## 0.6.13 — 2026-11-24
 
 - **One OMG Setup panel instead of three.** OMG Part Setup, OMG Cavities and OMG Accessories are now tabs of one **OMG Setup** panel on every non-assembly part: **Details**, **Cavities** (connectors) and **Accessories** (connectors - or **Fits** for a lock, boot, cover...). The Component Type is picked in the panel's header; missing fields show as badges that jump to the right tab; each tab has its own sticky "N unsaved changes - Discard / Save" bar and shows its unsaved count on the tab. Cavities shows the map as a strip of numbered cavities, one card per range (Sealing as None / Mat / Each wire), and looks up each series' contacts, seals and blanks by itself. Links open a tab directly: `/part/<pk>/omg-part-setup?tab=cavities` (or `accessories`). Fix: a duplicate "Solder" in the Series list (Mantine refused the list). The old panel keys `omg-cavities` / `omg-accessories` are gone - OMG's own links need OMG with the 24 Nov (OMG Setup links) update.

@@ -2,7 +2,7 @@
 OMG's part parameters from a Mouser result - so a part created from Mouser
 arrives with OMG's Component Type, gauges, colours, contact count, series
 and so on already filled in, under the InvenTree template names OMG uses
-(OMG > InvenTree Settings > Part Parameters, read from OMG's
+(OMG > Component Settings > Part parameters, read from OMG's
 /api/parts/part-profiles/).
 
 Used by:

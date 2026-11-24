@@ -1,6 +1,6 @@
 """
 OMG's selection lists inside InvenTree (OMG sets them up - see OMG's
-components/selection_lists.py and its InvenTree Settings page).
+components/selection_lists.py and its Component Settings page).
 
 OMG's part-profiles config says which list each parameter role uses:
 config["selection_lists"] = {role: {"list": "Connector Series", "per_item": bool}}.
@@ -101,5 +101,5 @@ def validate_list_items(plugin, parameter, data):
         hints = [f"'{u}' - did you mean '{suggest(u, values)}'?" if suggest(u, values) else f"'{u}'" for u in unknown]
         raise ValidationError(
             f"Not in the {meta['list']} list: {', '.join(hints)}. Use values from the list, separated by commas "
-            f"(add new ones on OMG's InvenTree Settings page, Selection Lists).")
+            f"(add new ones in OMG: Component Settings > Data quality > Selection Lists).")
     return None

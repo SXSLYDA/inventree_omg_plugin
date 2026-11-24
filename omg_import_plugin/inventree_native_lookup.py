@@ -5,7 +5,7 @@ ParameterTemplate, attached to a part by (model_type = Part, model_id = pk).
 (InvenTree 1.1's part.models.PartParameter is gone - this plugin needs 1.2+.)
 
 Which parameter NAMES to use is no longer configured here: OMG owns the
-part-parameter mapping (OMG > InvenTree Settings > Part Parameters) and
+part-parameter mapping (OMG > Component Settings > Part parameters) and
 sends the names with each BOM payload (payload["parameter_names"], role ->
 template name). OMG also works out contacts, blanks and wire parts itself
 (payload["part_logic"], each wire's "omg_selection"), so the plugin's own
