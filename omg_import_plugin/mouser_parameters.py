@@ -156,15 +156,15 @@ def _side(data):
 
 def _mating_side(data):
     """
-    A splice / loop / diode plug's Side: like every accessory, the side of the
-    connector it fits - a splice plug that is a plug fits a receptacle.
-    "Splice plug" / "loop plug" in the name doesn't count as saying it's a plug.
+    A splice / loop / diode plug's Side: its own - it plugs into the connector, so it's the other half (OMG
+    fits a receptacle splice plug to a plug connector). "Splice plug" / "loop plug" in the name doesn't count
+    as saying it's a plug.
     """
     text = re.sub(r'\b(?:splice|jumper|buss(?:ed)?|diode|loop(?: ?back)?|shorting)\s+plugs?\b', '', _text(data))
     if re.search(r'receptacle|\brcpt\b|\brecp\b', text):
-        return 'Plug'
-    if re.search(r'\bplug\b', text):
         return 'Receptacle'
+    if re.search(r'\bplug\b', text):
+        return 'Plug'
     return ''
 
 

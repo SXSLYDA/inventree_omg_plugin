@@ -1,8 +1,9 @@
 """
 Tell OMG when a part is made or changed here, so OMG's copy (its part library) keeps up: a part created or
-saved, a part parameter created or saved (Cavity Map, Contact Count, Plating ...) or a related part added. OMG
-re-reads those parts in the background - a new one is added to its library - and re-works the wire ends of the
-harnesses using them (OMG's /api/parts/refresh/).
+saved, a part parameter created or saved (Cavity Map, Contact Count, Plating ...) or a related part added. The
+push carries each part as it is now (part_payload: its fields, every parameter, related parts, manufacturer /
+supplier part numbers and picture paths), so OMG saves it without calling InvenTree back - a new one is added
+to its library - then re-works the wire ends of the harnesses using them (OMG's /api/parts/refresh/).
 
 If OMG can't be reached the change is still saved here, and the part is flagged "Changed in InvenTree - OMG
 not updated" (models.OmgSyncPending): retried every few minutes by the plugin's scheduled task
@@ -66,15 +67,73 @@ def mark_pending(pks, error, unchecked=False):
         row.save()
 
 
+def _picture(part):
+    """(image, thumbnail) paths as InvenTree's API gives them (None, None without a picture)."""
+    if not part.image:
+        return None, None
+    try:
+        return part.image.url, part.get_thumbnail_url()
+    except (ValueError, OSError):     # a missing file mustn't stop the push - the nightly copy tries again
+        return None, None
+
+
+def part_payload(pks):
+    """[{pk, part: {name, IPN, description, active, image, thumbnail}, parameters: {template: value}, related: [pk],
+    mpns, skus}] - each part as OMG stores it (the shape of its nightly copy). Parts gone are left out."""
+    from common.models import Parameter
+    from company.models import ManufacturerPart, SupplierPart
+    from django.db.models import Q
+    from part.models import Part, PartRelated
+
+    from .inventree_native_lookup import _part_content_type
+
+    parts = list(Part.objects.filter(pk__in=list(pks)))
+    found = [p.pk for p in parts]
+    parameters = {pk: {} for pk in found}
+    for pk, name, data in Parameter.objects.filter(model_type=_part_content_type(), model_id__in=found).values_list(
+            "model_id", "template__name", "data"):
+        if name:
+            parameters[pk][name] = data
+    related = {pk: set() for pk in found}
+    for a, b in PartRelated.objects.filter(Q(part_1_id__in=found) | Q(part_2_id__in=found)).values_list(
+            "part_1_id", "part_2_id"):
+        if a in related and b != a:
+            related[a].add(b)
+        if b in related and a != b:
+            related[b].add(a)
+    mpns, skus = {pk: set() for pk in found}, {pk: set() for pk in found}
+    for pk, mpn in ManufacturerPart.objects.filter(part_id__in=found).values_list("part_id", "MPN"):
+        if mpn and str(mpn).strip():
+            mpns[pk].add(str(mpn).strip())
+    for pk, sku in SupplierPart.objects.filter(part_id__in=found).values_list("part_id", "SKU"):
+        if sku and str(sku).strip():
+            skus[pk].add(str(sku).strip())
+    out = []
+    for part in parts:
+        image, thumbnail = _picture(part)
+        out.append({
+            "pk": part.pk,
+            "part": {"name": part.name, "IPN": part.IPN or "", "description": part.description or "",
+                     "active": bool(part.active), "image": image, "thumbnail": thumbnail},
+            "parameters": parameters[part.pk],
+            "related": sorted(related[part.pk]),
+            "mpns": sorted(mpns[part.pk]),
+            "skus": sorted(skus[part.pk]),
+        })
+    return out
+
+
 def notify(pks):
-    """Ask OMG to re-read these parts (in its background). Never raises. Returns '' when OMG took it, else why
-    not - the parts are then flagged (mark_pending); taken, any flag on them is cleared."""
+    """Send OMG these parts as they are now (OMG saves them and re-works their harnesses in its background).
+    Never raises. Returns '' when OMG took it, else why not - the parts are then flagged (mark_pending); taken,
+    any flag on them is cleared."""
     from .models import OmgSyncPending
     pks = sorted({int(pk) for pk in pks if pk})
     if not pks:
         return ''
     from .part_setup import omg_call
-    _data, error = omg_call("post", "/api/parts/refresh/", {"inventree_pks": pks}, timeout=10)
+    _data, error = omg_call("post", "/api/parts/refresh/", {"inventree_pks": pks, "parts": part_payload(pks)},
+                            timeout=10)
     if error:
         logger.info("OMG part refresh for %s not sent: %s", pks, error)
         mark_pending(pks, error)

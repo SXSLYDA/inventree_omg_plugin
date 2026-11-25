@@ -125,5 +125,7 @@ class DiodeTests(unittest.TestCase):
     def test_diode_plug_and_inline_diode(self):
         plug = {'description': 'Diode plug, DT, 2 way, plug', 'attributes': {'Series': 'DT'}}
         self.assertEqual(guess_component_type(plug), 'Diode')
-        self.assertEqual(omg_values(plug, 'Diode').get('connector.side'), 'Receptacle')   # a plug fits a receptacle
+        self.assertEqual(omg_values(plug, 'Diode').get('connector.side'), 'Plug')   # its own side - fits a receptacle
+        splice = {'description': 'Splice plug, DT, 12 way, receptacle', 'attributes': {'Series': 'DT'}}
+        self.assertEqual(omg_values(splice, 'Splice Plug').get('connector.side'), 'Receptacle')
         self.assertEqual(guess_component_type({'description': 'Rectifier Diode 1A 1000V'}), 'Diode')

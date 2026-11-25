@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActionIcon, Alert, Anchor, Autocomplete, Badge, Box, Button, Card, Checkbox, Collapse, Group, Image, Loader,
+    ActionIcon, Alert, Anchor, Autocomplete, Badge, Box, Button, Card, Checkbox, Collapse, Divider, Group, Image, Loader,
     MultiSelect, NumberInput, Paper, Popover, SegmentedControl, Select, SimpleGrid, Stack, Tabs, Text, TextInput,
     ThemeIcon, Title, Tooltip, UnstyledButton,
 } from '@mantine/core';
@@ -674,6 +674,14 @@ function CavitiesTab({ context, partId, onSaved, onDirty }: {
                                         disabled={!state.can_edit} allowDeselect={false} searchable
                                         onChange={(v) => setRow(i, { blank: v || '' })} />}
                             </SimpleGrid>
+                            <Stack gap={4} mt="sm">
+                                <Divider label="Optional" labelPosition="left" />
+                                <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }} spacing="sm">
+                                    <TextInput size="xs" label="Max wire OD (mm)" placeholder="e.g. 3.2" value={row.max_od}
+                                        description="Largest insulation OD - blank if unknown"
+                                        disabled={!state.can_edit} onChange={(e) => setRow(i, { max_od: e.currentTarget.value })} />
+                                </SimpleGrid>
+                            </Stack>
                             <Group gap={6} mt="sm">
                                 {isSolder(row) ? <Badge color="gray" variant="light">solder cups - no parts</Badge> : <>
                                     <Badge color={contacts.length && !missing.length ? 'green' : 'red'} variant="light"
@@ -687,10 +695,7 @@ function CavitiesTab({ context, partId, onSaved, onDirty }: {
                                         : <Badge color={blanks.length === 1 ? 'green' : 'orange'} variant="light">
                                             {blanks.length === 1 ? `blank ${blanks[0].name}` : blanks.length ? `${blanks.length} blanks - pick one` : 'no blank'}</Badge>}
                                 </>}
-                                <TextInput size="xs" w={130} ml="auto" placeholder="Max wire OD (mm)" value={row.max_od}
-                                    disabled={!state.can_edit} onChange={(e) => setRow(i, { max_od: e.currentTarget.value })}
-                                    aria-label="Largest insulation OD the cavities take" />
-                                {state.can_edit && <Tooltip label="Remove this range"><ActionIcon variant="subtle" color="red"
+                                {state.can_edit && <Tooltip label="Remove this range"><ActionIcon variant="subtle" color="red" ml="auto"
                                     onClick={() => setRows((old) => old.filter((_r, j) => j !== i))}><IconTrash size={16} /></ActionIcon></Tooltip>}
                             </Group>
                             {(row.problems || []).map((p, j) => <Text key={j} size="xs" c="red" mt={4}>{p}</Text>)}
