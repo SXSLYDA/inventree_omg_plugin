@@ -84,7 +84,7 @@ def run_harness_import_job(job_id):
         try:
             batch, resolved_matches = import_or_update_harness_bom(
                 job.harness_part_number, omg_bom_data,
-                category_pk=job.category_pk, target_part_pk=job.target_part_pk,
+                category_pk=job.category_pk, target_part_pk=job.target_part_pk, user=job.user,
             )
         except ValueError as exc:   # the import's own "can't do this" messages
             raise _JobFailed(str(exc))

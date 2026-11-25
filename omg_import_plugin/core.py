@@ -116,6 +116,17 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
             "choices": [("refuse", "Refuse"), ("warn", "Warn"), ("off", "Off")],
             "default": "refuse",
         },
+        "OMG_BUILD_CHECK": {
+            "name": "OMG build check",
+            "description": "Before a new build order of an OMG harness is made (by hand or by another plugin, e.g. "
+                           "Sales Order Builds), check its BOM is still what OMG last synced: not changed in "
+                           "InvenTree since, no review items left open, and (asking OMG, 5 s) not changed in OMG "
+                           "since. Refuse: the build isn't made, with the reason. Warn: it's made and the problems "
+                           "are kept in its metadata (omg_build_check). Off: no check. If OMG can't be reached "
+                           "the InvenTree checks still apply and the OMG one is skipped (noted on the build).",
+            "choices": [("refuse", "Refuse"), ("warn", "Warn"), ("off", "Off")],
+            "default": "refuse",
+        },
         "AMBIGUOUS_SEARCH_LIMIT": {
             "name": "Ambiguous candidate limit",
             "description": "When a part number matches several InvenTree parts (by name/IPN containing it), "
@@ -199,8 +210,11 @@ class OmgHarnessImportPlugin(AppMixin, UrlsMixin, SettingsMixin, UserInterfaceMi
     # --- ValidationMixin: OMG's harness check (change_check.py) ---
 
     def validate_model_instance(self, instance, deltas=None):
+        # Returns None on purpose - True would stop InvenTree asking any other validation plugin.
+        from .build_check import check_build
         from .change_check import check_instance
         check_instance(instance)
+        check_build(instance)
 
     def validate_model_deletion(self, instance):
         from .change_check import check_delete

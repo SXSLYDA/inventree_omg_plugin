@@ -179,7 +179,7 @@ def resolve_item(item, action, part_pk=None, notes=""):
             if line is None:
                 BomItem.objects.create(part=item.batch.root_part, sub_part=part, quantity=item.quantity)
             else:
-                line.quantity = line.quantity + item.quantity
+                line.set_quantity(str(line.quantity + item.quantity))   # raw_amount decides (see _upsert_bom_line)
                 line.save()
     elif action == "dismiss":
         item.resolution = UnresolvedImportItem.Resolution.DISMISSED

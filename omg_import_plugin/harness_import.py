@@ -80,6 +80,7 @@ Design decisions worth knowing about before you wire this in:
    appears on their pages either.
 """
 
+import logging
 from collections import defaultdict
 
 from django.db.models import Q
@@ -89,6 +90,9 @@ from part.models import Part
 from . import inventree_native_lookup as native
 from .models import ImportBatch, UnresolvedImportItem
 from .resolver import _find_candidates
+
+logger = logging.getLogger(__name__)
+
 
 def _mark_as_omg_harness(part):
     """
@@ -304,7 +308,7 @@ def _apply_omg_part_logic(batch, part_logic, bom_totals):
             _flag_connector(batch, issue.get("object_id"), issue.get("label", ""), message, quantity=0)
 
 
-def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=None, target_part_pk=None):
+def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=None, target_part_pk=None, user=None):
     """
     harness_part_number: the harness's IPN in InvenTree.
     omg_bom_data: the payload from OMG's HarnessBomExportView — includes
@@ -765,7 +769,39 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
     batch.save()
 
     _close_superseded_review_items(harness_part, batch)
+    record_sync(harness_part, batch, omg_bom_data, user=user)
     return batch, resolved_matches
+
+
+def record_sync(harness_part, batch, omg_bom_data, user=None):
+    """
+    What this sync wrote, on the harness part (metadata "omg_sync") - build_check.py compares new build orders
+    against it: the BOM as it now is in InvenTree ({sub_part pk: total quantity}), the review items it left
+    open, and OMG's design fingerprint / revision (None from an OMG without them).
+
+    Then InvenTree's own BOM validation follows it: a clean sync (nothing left to review) marks the BOM
+    validated, so InvenTree's checksum means "matches OMG's last clean sync" and any later edit in InvenTree
+    clears it - which InvenTree's "Require valid BOM" build setting and inventree-sales-order-builds' "Require
+    validated BOM" then enforce on their own. A sync that left review items marks it not validated.
+    """
+    from django.utils import timezone
+
+    from .build_check import SYNC_KEY, current_bom
+    open_items = batch.items.filter(resolution=UnresolvedImportItem.Resolution.UNRESOLVED).count()
+    harness_part.set_metadata(SYNC_KEY, {
+        "synced_at": timezone.now().isoformat(),
+        "batch": batch.pk,
+        "harness_id": omg_bom_data.get("harness_id"),
+        "part_number": omg_bom_data.get("harness_part_number") or harness_part.IPN or harness_part.name,
+        "fingerprint": omg_bom_data.get("design_fingerprint"),
+        "revision": omg_bom_data.get("design_revision"),
+        "bom": {pk: str(qty) for pk, qty in current_bom(harness_part).items()},
+        "open_items": open_items,
+    })
+    try:
+        harness_part.validate_bom(user, valid=not open_items)
+    except Exception:   # never fail the sync over InvenTree's BOM flag
+        logger.exception("Couldn't set BOM validation on harness part %s after the OMG sync", harness_part.pk)
 
 
 def _close_superseded_review_items(harness_part, current_batch):
@@ -892,7 +928,9 @@ def _upsert_bom_line(batch, harness_part, sub_part, quantity):
             return
         line = lines[0]
         if Decimal(line.quantity) != wanted:
-            line.quantity = wanted
+            # set_quantity, not .quantity: InvenTree works a line's quantity out of its raw_amount on every save
+            # (part units), so a plain .quantity change was quietly put back - existing lines never updated.
+            line.set_quantity(str(wanted))
             line.save()
     except ValidationError as exc:
         UnresolvedImportItem.objects.create(

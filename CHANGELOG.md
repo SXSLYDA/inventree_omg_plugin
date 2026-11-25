@@ -6,6 +6,14 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
+## 0.6.15 — 2026-11-25
+
+- **OMG build check (new setting `OMG_BUILD_CHECK`, default Refuse)** - a new build order of an OMG harness (made by hand, or by another plugin such as inventree-sales-order-builds) is checked against the last OMG sync: (1) the BOM hasn't been changed in InvenTree since (a line added, removed or a quantity changed - lines for the same part added together), (2) the sync's review items are all resolved, (3) the harness hasn't changed in OMG since (OMG's design fingerprint, one 5 s call to `/api/harness/<pn>/design-fingerprint/`). Refuse: the build isn't made - the reason starts "OMG: ..." (Sales Order Builds skips the line and tells the order's owner). Warn: it's made, with the problems in its metadata `omg_build_check`. Off. If OMG can't be reached, (1) and (2) still apply and (3) is noted on the build as a warning. Existing builds and parts that aren't OMG harnesses are never checked. Needs OMG with the 25 Nov (design fingerprint) update for (3) - without it a sync has no fingerprint and (3) is skipped.
+- **Each sync records what it wrote** on the harness part (metadata `omg_sync`: the BOM as written, open review items, OMG's fingerprint and revision) and **sets InvenTree's BOM validation**: a clean sync validates the BOM, one that left review items marks it not validated. So InvenTree's own "BOM valid" means "matches OMG's last clean sync", and any later edit in InvenTree clears it.
+- **Re-sync every harness once after updating** - until then a harness counts as "never synced from OMG" and Refuse stops its builds (or start on Warn).
+- **Fix: a re-sync never changed the quantity of a BOM line that was already there** (nor did linking a review item to a part already on the BOM). InvenTree 1.7 works a line's quantity out of its *raw amount* on every save, so setting the quantity was quietly put back. Both now use InvenTree's `set_quantity`. Re-syncing corrects any harness whose quantities were left behind.
+- Tests (`omg_import_plugin/test_build_check.py`, 18) run in InvenTree 1.7.3 with inventree-sales-order-builds 0.1.0. No migration. No panel changes (`-SkipBuild` is fine).
+
 ## 0.6.14 — 2026-11-24
 
 - No notes.
