@@ -870,6 +870,7 @@ def _material_part(batch, line, what):
         reason=UnresolvedImportItem.Reason.AMBIGUOUS if len(candidates) > 1 else UnresolvedImportItem.Reason.NOT_FOUND,
         notes=(f"{what} '{part_no}' matches more than one InvenTree part - choose which." if len(candidates) > 1
                else f"{what}: {NOT_IN_INVENTREE_MESSAGE.format(part_no=part_no)}" if part_no
+               else f"{what}: {line['missing']}." if line.get("missing")      # e.g. a braid colour with no yarn part
                else f"OMG has no part number for this {what} - set it in OMG Default Settings."),
     )
     return None
