@@ -7,8 +7,8 @@ second save can't bounce back and forth). The AWG value is tidied to just
 the size ("16 AWG" -> "16"), and validate_gauge_value() refuses an AWG that
 isn't a standard size (40..1, 1/0..4/0) or a mm² that isn't a number.
 
-Parameter names and the AWG <-> mm² table come from OMG
-(/api/parts/wire-parameters/, OMG > Component Settings > Part parameters),
+Parameter names and the AWG <-> mm² table come from OMG's part profiles
+(/api/parts/part-profiles/ - OMG > Component Settings > Part parameters, and Default Settings' gauge table),
 cached for NAMES_TTL; the built-in copies below are used if OMG can't be
 reached. Driven by InvenTree's own model events (EventMixin), so it works
 however the parameter was saved - the part page, the API, an import
@@ -21,8 +21,6 @@ import logging
 import math
 import re
 import time
-
-import requests
 
 from .inventree_native_lookup import (_part_content_type, get_part_parameter_str, parameter_template,
                                       part_parameter_lookup)
@@ -53,22 +51,20 @@ _cache = {"at": 0.0, "names": None, "table": None}
 
 
 def _omg_config(plugin):
-    """(parameter names, AWG->mm² table) from OMG, cached; built-in defaults if OMG can't be reached."""
+    """(parameter names, AWG->mm² table) from OMG's part profiles (part_setup.omg_part_config - the same cached
+    read the Part Setup panel uses); built-in defaults if OMG can't be reached."""
     if _cache["names"] and time.time() - _cache["at"] < NAMES_TTL:
         return _cache["names"], _cache["table"]
+    from .part_setup import omg_part_config
     names, table = dict(DEFAULT_NAMES), dict(DEFAULT_AWG_TO_MM2)
-    base_url = plugin.get_setting("OMG_HARNESS_API_URL") if plugin else None
-    token = plugin.get_setting("OMG_HARNESS_API_TOKEN") if plugin else None
-    if base_url and token:
-        try:
-            resp = requests.get(f"{base_url.rstrip('/')}/api/parts/wire-parameters/",
-                                headers={"Authorization": f"Token {token}"}, timeout=10)
-            resp.raise_for_status()
-            body = resp.json()
-            names.update({k: v for k, v in (body.get("parameter_names") or {}).items() if v})
-            table = body.get("awg_to_mm2") or table
-        except (requests.RequestException, ValueError) as exc:
-            logger.warning("OMG gauge auto-fill: couldn't read OMG's wire parameter names (%s) - using defaults", exc)
+    config, error = omg_part_config(plugin)
+    if config:
+        roles = config.get("roles") or {}
+        names.update({role: (roles.get(role) or {}).get("template") for role in DEFAULT_NAMES
+                      if (roles.get(role) or {}).get("template")})
+        table = config.get("awg_to_mm2") or table
+    else:
+        logger.warning("OMG gauge auto-fill: couldn't read OMG's part profiles (%s) - using defaults", error)
     _cache.update(at=time.time(), names=names, table=table)
     return names, table
 

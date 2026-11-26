@@ -59,3 +59,26 @@ class PartPushTest(InvenTreeTestCase):
         with mock.patch("omg_import_plugin.part_setup.omg_call", return_value=({}, None)):
             notify([self.contact.pk])
         self.assertFalse(OmgSyncPending.objects.filter(part=self.contact).exists())
+
+
+class GaugeConfigTest(InvenTreeTestCase):
+    """The gauge auto-fill reads OMG's part profiles (OMG's old /api/parts/wire-parameters/ is gone - a 404 each
+    time a gauge was saved)."""
+
+    def setUp(self):
+        super().setUp()
+        from . import gauge_autofill
+        gauge_autofill._cache.update(at=0.0, names=None, table=None)
+
+    def test_names_and_table_from_part_profiles(self):
+        from .gauge_autofill import _omg_config
+        profiles = {"roles": {"wire.gauge_mm2": {"template": "Wire mm²"}, "wire.gauge_awg": {"template": "AWG"}},
+                    "awg_to_mm2": {"18": "0.8"}}
+        with mock.patch("omg_import_plugin.part_setup.omg_part_config", return_value=(profiles, None)):
+            names, table = _omg_config(None)
+        self.assertEqual((names, table), ({"wire.gauge_mm2": "Wire mm²", "wire.gauge_awg": "AWG"}, {"18": "0.8"}))
+
+    def test_defaults_when_omg_is_down(self):
+        from .gauge_autofill import DEFAULT_AWG_TO_MM2, DEFAULT_NAMES, _omg_config
+        with mock.patch("omg_import_plugin.part_setup.omg_part_config", return_value=(None, "down")):
+            self.assertEqual(_omg_config(None), (DEFAULT_NAMES, DEFAULT_AWG_TO_MM2))

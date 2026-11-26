@@ -6,7 +6,7 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 
 ## Unreleased
 
-## 0.6.16 — 2026-11-25
+## 0.6.17 — 2026-11-26
 
 - **OMG build check (new setting `OMG_BUILD_CHECK`, default Refuse)** - a new build order of an OMG harness (made by hand, or by another plugin such as inventree-sales-order-builds) is checked against the last OMG sync: (1) the BOM hasn't been changed in InvenTree since (a line added, removed or a quantity changed - lines for the same part added together), (2) the sync's review items are all resolved, (3) the harness hasn't changed in OMG since (OMG's design fingerprint, one 5 s call to `/api/harness/<pn>/design-fingerprint/`). Refuse: the build isn't made - the reason starts "OMG: ..." (Sales Order Builds skips the line and tells the order's owner). Warn: it's made, with the problems in its metadata `omg_build_check`. Off. If OMG can't be reached, (1) and (2) still apply and (3) is noted on the build as a warning. Existing builds and parts that aren't OMG harnesses are never checked. Needs OMG with the 25 Nov (design fingerprint) update for (3) - without it a sync has no fingerprint and (3) is skipped.
 - **Each sync records what it wrote** on the harness part (metadata `omg_sync`: the BOM as written, open review items, OMG's fingerprint and revision) and **sets InvenTree's BOM validation**: a clean sync validates the BOM, one that left review items marks it not validated. So InvenTree's own "BOM valid" means "matches OMG's last clean sync", and any later edit in InvenTree clears it.
@@ -15,7 +15,8 @@ Versions before the first tagged release (up to 0.1.32) were deployed straight f
 - **OMG Setup > Cavities: Max wire OD has its own heading.** It was an unlabelled box next to the delete button; it's now under an **Optional** divider below the range's main fields, labelled **Max wire OD (mm)** with a one-line hint. Panel changed: rebuild (no `-SkipBuild`).
 - **Splice / loop / diode plugs: Side is now the part's own side** (the other half of the connector it plugs into) - a Mouser "receptacle" splice plug gets Side Receptacle, not Plug. Goes with OMG's matching change (a receptacle splice plug fits a plug connector). Existing plug-in parts imported with the old rule have the opposite Side - OMG flags them ("same side - it plugs in, so it's the other half"); flip their Side.
 - **The push to OMG carries the part.** When a part, parameter or related part changes here, the plugin now sends OMG the part as it is now - name, IPN, description, active, every parameter, related parts, manufacturer and supplier part numbers and picture paths - and OMG saves it straight into its copy, instead of being told a pk and reading InvenTree back. Needs OMG with the 25 Nov (part data) update. OMG down: flagged and retried as before.
-- Tests (`omg_import_plugin/test_build_check.py`, 18; `omg_import_plugin/test_omg_refresh.py`, 3) run in InvenTree 1.7.3 with inventree-sales-order-builds 0.1.0. No migration.
+- **Fixed: wire gauge auto-fill used the built-in names and table.** It asked OMG for `/api/parts/wire-parameters/`, which OMG no longer has (a 404 in InvenTree's log each time a part parameter was saved). It now reads the gauge parameter names and your AWG / mm² table from OMG's part profiles, the same cached read the Part Setup panel uses.
+- Tests (`omg_import_plugin/test_build_check.py`, 18; `omg_import_plugin/test_omg_refresh.py`, 5) run in InvenTree 1.7.3 with inventree-sales-order-builds 0.1.0. No migration.
 
 ## 0.6.14 — 2026-11-24
 
