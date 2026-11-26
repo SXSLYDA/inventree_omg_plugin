@@ -956,13 +956,13 @@ function OMGSetupPanel({ context }: { context: InvenTreePluginContext }) {
     }, [context.api, partId, apply]);
     useEffect(() => { load(); }, [load]);
 
-    const profile: Profile | null = state && componentType ? state.profiles[componentType] || null : null;
+    const profile: Profile | null = state && componentType ? state.profiles?.[componentType] || null : null;
     const own = profile?.own_pins ?? [];
     const ownOn = ownPins ?? (own.some((r) => !!values[r]) || /solder/i.test(values['connector.cavity_map'] || ''));
 
     // what's changed on Details (type, fields, the own-pins switch clearing values)
     const detailChanges = useMemo(() => {
-        if (!state) return 0;
+        if (!state || !state.fields) return 0;     // OMG couldn't be read: only {error} - shown below
         let n = componentType && componentType !== (state.profile || state.component_type) ? 1 : 0;
         for (const [role, field] of Object.entries(state.fields)) {
             const now = own.includes(role) && !ownOn ? '' : values[role] ?? '';

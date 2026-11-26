@@ -10,7 +10,7 @@
     "dev": "vite --config vite.dev.config.ts --host"
   },
   "dependencies": {
-    "@inventreedb/ui": "1.5.0",
+    "@inventreedb/ui": "1.7.0",
     "@mantine/core": ">= 9.2.1",
     "@mantine/hooks": ">= 9.2.1",
     "@mantine/modals": ">= 9.2.1",

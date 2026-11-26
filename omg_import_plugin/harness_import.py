@@ -382,6 +382,11 @@ def import_or_update_harness_bom(harness_part_number, omg_bom_data, category_pk=
             )
             created = True
 
+    if not harness_part.assembly:
+        # what OMG syncs has a BOM - e.g. a loop / splice plug OMG made as a plain part before it made them
+        # assemblies: InvenTree only takes BOM lines on an assembly
+        harness_part.assembly = True
+        harness_part.save()
     _mark_as_omg_harness(harness_part)
 
     batch = ImportBatch.objects.create(root_part_number=harness_part_number, root_part=harness_part)

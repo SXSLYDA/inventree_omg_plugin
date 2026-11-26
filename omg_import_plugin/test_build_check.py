@@ -260,3 +260,16 @@ class BuildCheckTest(InvenTreeTestCase):
         self.assertEqual(len(result.skipped), 1)
         self.assertIn("OMG: the BOM was changed in InvenTree", result.skipped[0][1])
         self.assertFalse(Build.objects.filter(sales_order=order).exists())
+
+    def test_sync_makes_a_plain_part_an_assembly(self):
+        """A loop / splice plug OMG made in InvenTree as a plain part (before plugs were assemblies) takes its BOM:
+        the sync makes the part it syncs into an assembly."""
+        from .harness_import import import_or_update_harness_bom
+        plug = Part.objects.create(name="LP-100", description="Loop plug", component=True, assembly=False)
+        with mock.patch("omg_import_plugin.harness_import._sync_harness_identity"):
+            batch, _ = import_or_update_harness_bom("LP-100", {"harness_part_number": "LP-100", "harness_id": 9,
+                                                                "design_fingerprint": FINGERPRINT})
+        plug.refresh_from_db()
+        self.assertTrue(plug.assembly)
+        self.assertEqual(batch.root_part, plug)
+
